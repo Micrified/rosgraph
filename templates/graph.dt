@@ -1,0 +1,25 @@
+## Command to generate layout: dot -Tpng input_file > graph.png
+
+digraph G {
+graph [
+rankdir = "LR"
+];
+layout=dot
+
+## Callbacks
+node [shape=circle];
+{{- range .Callbacks}}
+{{.Name}} [label="{{.Name}}" {{if .Timer}}, style=bold{{end}}];
+{{- end}}
+
+## Topics
+node [shape=box];
+{{- range .Topics}}
+{{.Name}} [label="{{.Name}}"];
+{{- end}}
+
+## Edges
+{{- range .Edges}}
+{{.From}}->{{.To}} [color="{{.Color}}"];
+{{- end}}
+}

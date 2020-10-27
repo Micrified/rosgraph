@@ -1,0 +1,38 @@
+digraph G {
+graph[nodesep=1, ranksep=2]
+
+## Topics cluster
+subgraph cluster_topics {
+	label="Topics";
+	node[shape=box];
+	{{- range .Topics}}
+	{{.Name}} [label="{{.Name}}"];
+	{{- end}}
+}
+
+## Executor clusters
+{{- range .Executors}}
+subgraph cluster_{{.Name}} {
+	label="{{.Name}}";
+	{{- range .Nodes}}
+	{{- $length := len $.Callbacks}}
+	{{- if eq $length 0}}
+	{{- else}}
+	subgraph cluster_{{.Name}} {
+		label="{{.Name}}";
+		node[shape=circle];
+		{{- range .Callbacks}}
+			{{.Name}} [label="{{.Name}}" {{if .Timer}}, style=bold{{end}}];
+		{{- end}}
+	}
+	{{- end}}
+	{{- end}}
+}
+{{- end}}
+
+## Edges
+{{- range .Edges}}
+{{.From}}->{{.To}} [color="{{.Color}}"];
+{{- end}}
+
+}
