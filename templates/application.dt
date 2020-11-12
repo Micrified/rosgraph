@@ -22,7 +22,7 @@ subgraph cluster_{{.Name}} {
 		label="{{.Name}}";
 		node[shape=circle];
 		{{- range .Callbacks}}
-			{{.Name}} [label="{{.Name}}" {{if .Timer}}, style=bold{{end}}];
+			{{.Name}} [label="{{.Name}}{{range .Merged}}\n+\n{{.Name}}{{end}}" {{if .Timer}}, style=bold{{end}}];
 		{{- end}}
 	}
 	{{- end}}

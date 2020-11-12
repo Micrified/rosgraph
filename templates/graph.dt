@@ -6,20 +6,14 @@ rankdir = "LR"
 ];
 layout=dot
 
-## Callbacks
+## Nodes
 node [shape=circle];
-{{- range .Callbacks}}
-{{.Name}} [label="{{.Name}}" {{if .Timer}}, style=bold{{end}}];
+{{- range $i, $n := .Nodes}}
+N{{$n.Id}} [label="{{$n.Label}}", style="{{$n.Style}}"]
 {{- end}}
 
-## Topics
-node [shape=box];
-{{- range .Topics}}
-{{.Name}} [label="{{.Name}}"];
-{{- end}}
-
-## Edges
-{{- range .Edges}}
-{{.From}}->{{.To}} [color="{{.Color}}"];
+## Links
+{{- range .Links}}
+N{{.From}}->N{{.To}} [label="{{.Label}}", color="{{.Color}}"];
 {{- end}}
 }
