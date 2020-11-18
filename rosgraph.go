@@ -18,6 +18,7 @@ import (
 	"graph"
 	"set"
 	"benchmark"
+	"colors"
 
 	// Third party packages
 	"github.com/gookit/color"
@@ -208,6 +209,11 @@ func get_path (id int, chains []int, g *graph.Graph) []int {
 	// Chains may only merge between start nodes. Starting edge is in this row
 	start_rows := get_start_rows(chains)
 
+	// If the chain has only one element - it cannot be merged so return row
+	if chains[id] == 1 {
+		return []int{start_rows[id]}
+	}
+
 	// Locate row on which starting edge resides
 	for i := 0; i < len(start_rows); i++ {
 		if c := col_for_edge(id, 0, start_rows[i], g); c != -1 {
@@ -367,6 +373,11 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
 		return false
 	}
 
+	// Condition: Chains with only one callback cannot be merged (shortcut for next rule)
+	// Solution: If either node belongs to chain of length 1 - return false
+	if chains[to_chain_id] == 1 || chains[from_chain_id] == 1 {
+		fmt.Printf("Cannot merge %d and %d, as one of the chains will not be distinguishable\n", from, to)
+	}
 	// Condition: Don't allow chains to be completely merged with one another
 	// Solution: If node being merged is the only differing element between the paths
 	//           of the 'to' and 'from', then disallow merge
@@ -450,7 +461,7 @@ func generate_from_template (data interface{}, in_path, out_path string) error {
 */
 
 // Converts internal graph representation to graphviz data structure
-func graph_to_graphviz (temporal_map map[int]float64, g *graph.Graph) (Graphviz, error) {
+func graph_to_graphviz (chains []int, temporal_map map[int]float64, g *graph.Graph) (Graphviz, error) {
 	nodes := []Node{}
 	links := []Link{}
 
@@ -464,9 +475,13 @@ func graph_to_graphviz (temporal_map map[int]float64, g *graph.Graph) (Graphviz,
 		return false
 	}
 
-	// Create all nodes (but only if connected)
+	length_one_chain := func (row int, chains []int) bool {
+		return chains[get_row_chain(row, chains)] == 1
+	} 
+
+	// Create all nodes (but only if connected or chain has length 1)
 	for i := 0; i < g.Len(); i++ {
-		if is_connected(i, g) {
+		if is_connected(i, g) || length_one_chain(i, chains) {
 			label := fmt.Sprintf("N%d\n(wcet=%.2f)", i, temporal_map[i])
 			nodes = append(nodes, Node{Id: i, Label: label, Style: "solid", Fill: "#FFFFFF"})			
 		}
@@ -657,17 +672,89 @@ func get_chains (chain_count, chain_avg_len int, chain_variance float64) []int {
 	return chains
 }
 
+// Returns a list of random RGB color hex strings
+func get_colors (n int) []string {
+	chain_colors, err := colors.RandomColors(n)
+	check(err, fmt.Sprintf("Unable to generate %d random colors!", n))
+	return chain_colors
+}
+
+// Returns a list of random merge operations to perform
+func get_random_merges (chains []int, merge_p float64) ([]int, []int) {
+	from, to := []int{}, []int{}
+
+	// Compute number of nodes
+	node_count := 0
+	for _, c := range chains {
+		node_count += c
+	}
+	fmt.Printf("There are %d nodes\n", node_count)
+
+	show_nodes := func (nodes []int) {
+		fmt.Printf("{")
+		for i, n := range nodes {
+			fmt.Printf("%d", n)
+			if (i+1) != len(nodes) {
+				fmt.Printf(",")
+			}
+		}
+		fmt.Println("}")
+	}
+
+	// Create node array
+	node_array := []int{}
+	for i := 0; i < node_count; i++ {
+		node_array = append(node_array, i)
+	}
+
+	show_nodes(node_array)
+
+	// Continue to merge until only one node left
+	for len(node_array) > 1 {
+
+		// Number of possible merges between nodes
+		chances := (len(node_array) * (len(node_array) - 1)) / 2
+
+		fmt.Printf("Chances = %d\n", chances)
+
+		// Take a chance for each possible merge
+		for chances > 0 {
+
+			// If probability met - merge and reconsider
+			if rand.Float64() < merge_p {
+				i, j := rand.Intn(len(node_array)), rand.Intn(len(node_array))
+				fmt.Printf("Merging node at index %d into node at index %d\n", i, j)
+				// Don't count self merges
+				if i == j {
+					continue
+				}
+
+				// Otherwise register a merge
+				fmt.Printf("Removing %d at index %d\n", node_array[i], i)
+				from = append(from, node_array[i])
+				to   = append(to,   node_array[j])
+				node_array = append(node_array[:i], node_array[i+1:]...)
+				show_nodes(node_array)
+				break
+			}
+			chances--
+		}
+
+		// If all chances exhausted, stop
+		if chances == 0 {
+			fmt.Printf("Tried all chances but exhausted ... \n")
+			return from, to
+		}
+	}
+
+	return from, to
+}
+
 func main () {
 	var benchmarks []*benchmark.Benchmark
 	var err error
 	var input Config
 	var data []byte
-
-	// Test: get chains
-	cs := get_chains(10, 10, 1.0)
-	for i, c := range cs {
-		fmt.Printf("%d. %d\n", i, c)
-	} 
 
 	// Expect input as a JSON argument
 	if len(os.Args) != 2 {
@@ -701,10 +788,11 @@ func main () {
 	}
 
 	// Generate the chains
-
-	// Generate the chains
-
-	chains, colors := []int{4,4}, []string{"red", "blue"}
+	chains := get_chains(input.Chain_count, input.Chain_avg_len, input.Chain_variance)
+	colors := get_colors(input.Chain_count)
+	for i, c := range chains {
+		fmt.Printf("%d. %d\n", i, c)
+	} 
 
 	ppath := func (path []int) {
 		fmt.Printf("{ ")
@@ -714,32 +802,26 @@ func main () {
 		fmt.Printf(" }\n")
 	}
 
-	// Init the benchmarks
-
 	// Create the graph
 	g := init_graph(chains, colors)
 	fmt.Printf("%s", g.String(show))
 
 	// Print paths
-	p1, p2 := get_path(0, chains, g), get_path(1, chains, g)
-	ppath(p1) 
-	ppath(p2)
+	for i := 0; i < input.Chain_count; i++ {
+		ppath(get_path(i, chains, g))
+	}
 
-	// Merge sets
-	from := []int{0, 1, 7, 6, 3, 2, 6, 5, 2, 4, 5}
-	to   := []int{3, 3, 3, 3, 6, 6, 1, 6, 6, 0, 1}
+	// Perform random merges
+	from, to := get_random_merges(chains, input.Chain_merge_p)
+	for i := 0; i < len(from); i++ {
+		fmt.Printf("%d -> %d\n", from[i], to[i])
+	}
 
 	for i := 0; i < len(from); i++ {
 		if can_merge(from[i], to[i], chains, g) {
 			merge(from[i], to[i], g)
-			fmt.Printf("%s", g.String(show))
 		}
 	}
-
-	// Print paths
-	p1, p2 = get_path(0, chains, g), get_path(1, chains, g)
-	ppath(p1) 
-	ppath(p2)
 
 	// Assign timing information to graph
 	us := temporal.Uunifast(1.0, len(chains))
@@ -756,7 +838,7 @@ func main () {
 	}
 
 	// Create graph
-	gvz, err := graph_to_graphviz(tps, g)
+	gvz, err := graph_to_graphviz(chains, tps, g)
 	if nil != err {
 		panic(err)
 	}
@@ -772,9 +854,9 @@ func main () {
 	}
 
 	// Otherwise use dot to produce a graph
-	dot_cmd := exec.Command("dot", "-Tpng",  "graph.dot",  "-o", "graph.png")
+	dot_cmd := exec.Command("dot", "-Tpng",  "graph.dot",  "-o",  path + "/graph.png")
 	err = dot_cmd.Run()
-	check(err, "Unable to invole dot!")
+	check(err, "Unable to invoke dot!")
 
 	fmt.Println("Finished and graph generated!")
 }
