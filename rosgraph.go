@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"bufio"
 	"math"
+	"math/rand"
 	"runtime"
 	"encoding/json"
 	"os/exec"
@@ -636,11 +637,37 @@ func get_benchmarks (cfg benchmark.Configuration) ([]*benchmark.Benchmark, error
 	return benchmarks, nil
 }
 
+// Returns a list of chains, of varying length
+func get_chains (chain_count, chain_avg_len int, chain_variance float64) []int {
+	var chains []int = make([]int, chain_count)
+
+	// Standard deviation is variance squared
+	std_dev := math.Sqrt(chain_variance)
+
+	// Mean is simply our average chain length
+	mean := float64(chain_avg_len)
+
+	// Sample a normal distribution to obtain a random variable
+	for i := 0; i < chain_count; i++ {
+		r := rand.NormFloat64() * std_dev + mean
+		chains[i] = int(math.Max(1.0, math.Round(r)))
+		fmt.Printf("%f\n", r)
+	}
+
+	return chains
+}
+
 func main () {
 	var benchmarks []*benchmark.Benchmark
 	var err error
 	var input Config
 	var data []byte
+
+	// Test: get chains
+	cs := get_chains(10, 10, 1.0)
+	for i, c := range cs {
+		fmt.Printf("%d. %d\n", i, c)
+	} 
 
 	// Expect input as a JSON argument
 	if len(os.Args) != 2 {
@@ -672,6 +699,8 @@ func main () {
 			color.Red.Printf("No data\n")
 		}
 	}
+
+	// Generate the chains
 
 	// Generate the chains
 
