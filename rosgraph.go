@@ -9,6 +9,8 @@ import (
 	"bufio"
 	"math"
 	"runtime"
+	"encoding/json"
+	"os/exec"
 
 	// Custom packages
 	"temporal"
@@ -19,6 +21,23 @@ import (
 	// Third party packages
 	"github.com/gookit/color"
 )
+
+/*
+ *******************************************************************************
+ *                        Input/Output Type Definitions                        *
+ *******************************************************************************
+*/
+
+type Config struct {
+	Path              string
+	Chain_count       int
+	Chain_avg_len     int
+	Chain_merge_p     float64
+	Chain_variance    float64
+	Util_total        float64
+	Min_period_ns     int
+	Max_period_ns     int
+} 
 
 /*
  *******************************************************************************
@@ -620,10 +639,28 @@ func get_benchmarks (cfg benchmark.Configuration) ([]*benchmark.Benchmark, error
 func main () {
 	var benchmarks []*benchmark.Benchmark
 	var err error
+	var input Config
+	var data []byte
 
+	// Expect input as a JSON argument
+	if len(os.Args) != 2 {
+		reason := fmt.Sprintf("%s expects exactly 1 argument, not %d", os.Args[0], len(os.Args) - 1)
+		check(errors.New(reason), "Please provide input as JSON encoded argument")()
+	} else {
+		data = []byte(os.Args[1])
+	}
+
+	// Attempt to decode argument
+	err = json.Unmarshal(data, &input)
+	check(err, "Unable to unmarshal the input argument!")
+	fmt.Println(string(data))
+
+	// Extract path
+	path := input.Path
+	fmt.Printf("path = %s\n", input.Path)
 
 	// Get the benchmarks
-	bench_cfg := benchmark.Configuration{Src: "benchmarks/bench/sequential", Stats: "stats", Bin: "bin"}
+	bench_cfg := benchmark.Configuration{Src: path + "/benchmarks/bench/sequential", Stats: "stats", Bin: "bin"}
 	benchmarks, err = get_benchmarks(bench_cfg)
 
 	// Print benchmarks
@@ -636,6 +673,7 @@ func main () {
 		}
 	}
 
+	// Generate the chains
 
 	chains, colors := []int{4,4}, []string{"red", "blue"}
 
@@ -693,8 +731,21 @@ func main () {
 	if nil != err {
 		panic(err)
 	}
-	err = generate_from_template (gvz, "templates/graph.dt", "graph.dot")
+	err = generate_from_template(gvz, path + "/templates/graph.dt", "graph.dot")
 	if nil != err {
 		panic(err)
 	}
+
+	// Lookup if DOT is available (exit quietly if not)
+	_, err = exec.LookPath("dot")
+	if nil != err {
+		return
+	}
+
+	// Otherwise use dot to produce a graph
+	dot_cmd := exec.Command("dot", "-Tpng",  "graph.dot",  "-o", "graph.png")
+	err = dot_cmd.Run()
+	check(err, "Unable to invole dot!")
+
+	fmt.Println("Finished and graph generated!")
 }
