@@ -666,7 +666,7 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 				node_map[node] = &set.Set{Triple{Node: node, Chain: i, WCET: wcet}}
 			} else {
 				value.Insert(Triple{Node: node, Chain: i, WCET: wcet}, set_cmp)
-			}			
+			}
 		}
 	}
 
