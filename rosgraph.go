@@ -35,6 +35,7 @@ type Config struct {
 	Chain_count       int
 	Chain_avg_len     int
 	Chain_merge_p     float64
+	Chain_sync_p      float64
 	Chain_variance    float64
 	Util_total        float64
 	Min_period_ns     int
@@ -95,6 +96,22 @@ func check (err error, s string, args ...interface{}) func() {
 	}
 }
 
+func warn (s string, args ...interface{}) {
+	color.Warn.Printf("Warning: %s\n", fmt.Sprintf(s, args...))
+}
+
+func show_config (cfg Config) {
+	color.Black.Printf("Path:           "); color.Magenta.Printf("%s\n", cfg.Path)
+	color.Black.Printf("Chain_count:    "); color.Magenta.Printf("%d\n", cfg.Chain_count)
+	color.Black.Printf("Chain_avg_len:  "); color.Magenta.Printf("%d\n", cfg.Chain_avg_len)
+	color.Black.Printf("Chain_merge_p:  "); color.Magenta.Printf("%.2f\n", cfg.Chain_merge_p)
+	color.Black.Printf("Chain_sync_p:   "); color.Magenta.Printf("%.2f\n", cfg.Chain_sync_p)
+	color.Black.Printf("Chain_variance: "); color.Magenta.Printf("%.2f\n", cfg.Chain_variance)
+	color.Black.Printf("Util_total:     "); color.Magenta.Printf("%.2f\n", cfg.Util_total)
+	color.Black.Printf("Min_period_ns:  "); color.Magenta.Printf("%d\n", cfg.Min_period_ns)
+	color.Black.Printf("Max_period_ns:  "); color.Magenta.Printf("%d\n", cfg.Max_period_ns)
+}
+
 /*
  *******************************************************************************
  *                          Graph Operation Functions                          *
@@ -126,7 +143,7 @@ func edgesAt (row, col int, g *graph.Graph) []*Edge {
 	return val.([]*Edge)
 }
 
-// Returns starting row of all chains, given an ordered slice of chain lengths
+// Returns starting row of all chains, given an ordeMagenta slice of chain lengths
 func get_start_rows (chains []int) []int {
 	starting_rows := []int{}
 	for i, sum := 0, 0; i < len(chains); i++ {
@@ -260,7 +277,7 @@ func get_path (id int, chains []int, g *graph.Graph) []int {
 func init_graph (chains []int, palette []string) *graph.Graph {
 	rows := 0;
 
-	// Required rows is sum of chain lengths
+	// RequiMagenta rows is sum of chain lengths
 	for _, n := range chains {
 		rows += n
 	}
@@ -337,6 +354,19 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
 		return true
 	}
 
+	// Closure: Returns true if the given path has a cycle
+	cycle_in_path := func (path []int) bool {
+		visited := make(map[int]int)
+		for i := 0; i < len(path); i++ {
+			if _, exists := visited[path[i]]; exists {
+				return true 
+			} else {
+				visited[path[i]] = 1
+			}
+		}
+		return false
+	}
+
 	// Closure: Replaces occurrences of 'match' with 'replacement' in given path, returns new path
 	replace_in_path := func (match, replacement int, path []int) []int {
 		clone := []int{}
@@ -368,8 +398,9 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
 	// Condition: A path cannot have loops
 	// Solution: If 'to' and 'from' are from the same chain - return false
 	to_chain_id, from_chain_id := get_row_chain(to, chains), get_row_chain(from, chains)
-	if to_chain_id == from_chain_id {
-		fmt.Printf("Cannot merge %d and %d, as they are from the same chain!\n", from, to)
+	path_to, path_from := get_path(to_chain_id, chains, g), get_path(from_chain_id, chains, g)
+	if to_chain_id == from_chain_id || cycle_in_path(replace_in_path(from, to, path_from)) {
+		fmt.Printf("Cannot merge %d and %d, as a cycle is formed in a path!\n", from, to)
 		return false
 	}
 
@@ -378,10 +409,10 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
 	if chains[to_chain_id] == 1 || chains[from_chain_id] == 1 {
 		fmt.Printf("Cannot merge %d and %d, as one of the chains will not be distinguishable\n", from, to)
 	}
+
 	// Condition: Don't allow chains to be completely merged with one another
 	// Solution: If node being merged is the only differing element between the paths
 	//           of the 'to' and 'from', then disallow merge
-	path_to, path_from := get_path(to_chain_id, chains, g), get_path(from_chain_id, chains, g)
 	if equal_paths(path_to, replace_in_path(from, to, path_from)) {
 		fmt.Printf("Cannot merge %d and %d, as the chains will not be distinguishable\n", from, to)
 		return false
@@ -441,7 +472,7 @@ func generate_from_template (data interface{}, in_path, out_path string) error {
 		return errors.New("unable to parse the template: " + err.Error())
 	}
 
-	// Create buffered writer
+	// Create buffeMagenta writer
 	writer := bufio.NewWriter(out_file)
 	defer writer.Flush()
 
@@ -503,7 +534,83 @@ func graph_to_graphviz (chains []int, temporal_map map[int]float64, g *graph.Gra
 
 /*
  *******************************************************************************
- *                            Utilization Functions                            *
+ *                       Adding: Synchronization points                        *
+ *******************************************************************************
+*/
+
+// A minimal Edge, which holds the source and destination node
+type MinEdge struct {
+	From   int
+	To     int
+}
+
+// Creates an extended version of the supplied graph by adding synchronization points
+func add_synchronization_nodes (chain_sync_p float64, g *graph.Graph) *graph.Graph {
+	node_edge_map := make(map[int]([]MinEdge))
+
+	// Locate all nodes with two or more incoming edges
+	for i := 0; i < g.Len(); i++ {
+
+		// Check column for incoming edges
+		for j := 0; j < g.Len(); j++ {
+
+			// Extract all incoming edges along column i
+			edges := edgesAt(j, i, g)
+
+			// If there are no edges, move on
+			if len(edges) == 0 {
+				continue
+			}
+
+			// Build the minimal edge slice
+			min_edges := []MinEdge{}
+			for k := 0; k < len(edges); k++ {
+				min_edges = append(min_edges, MinEdge{From: j, To: i})
+			}
+
+			// Otherwise append them to the existing slice
+			if slice := node_edge_map[i]; slice != nil {
+				node_edge_map[i] = append(slice, min_edges...)
+			} else {
+				node_edge_map[i] = min_edges
+			}
+		} 
+	}
+
+	// Perform a random merge between two of the pairs
+	for node, edges := range node_edge_map {
+		fmt.Printf("Node %d has %d incoming edges\n", node, len(edges))
+
+		// Compute the number of attempts possible
+		n := len(edges)
+		attempts := (n * (n - 1)) / 2
+
+		// Attempt 
+		for i := 0; i < attempts; i++ {
+
+			// Continue if inverse P 
+			if (rand.Float64() >= chain_sync_p) {
+				continue
+			}
+
+			// Otherwise shuffle
+			rand.Shuffle(n, func(x, y int){ edges[x], edges[y] = edges[y], edges[x] })
+
+			// Pick first two
+			first, second := edges[0], edges[1]
+
+			// Issue a directive
+			fmt.Printf("Will be placing a sync node between %d->%d, and %d->%d\n",
+				first.From, first.To, second.From, second.To)
+		}
+	}
+
+	return nil
+}
+
+/*
+ *******************************************************************************
+ *                        Mapping: Utilisation to nodes                        *
  *******************************************************************************
 */
 
@@ -514,10 +621,10 @@ type Triple struct {
 }
 
 // Assigns WCET to all nodes within chains. Resolves clashes
-func map_temporal_data_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) map[int]float64 {
+func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) map[int]float64 {
 	var paths [][]int = make([][]int, len(chains))
 	var node_map map[int]*set.Set = make(map[int]*set.Set)
-	var node_wcet map[int]float64 = make(map[int]float64)
+	var node_wcet_map map[int]float64 = make(map[int]float64)
 	var path_redistribution_budget []float64 = make([]float64, len(chains))
 
 	// Closure: Comparator for sets
@@ -537,7 +644,7 @@ func map_temporal_data_to_nodes (ts []temporal.Temporal, chains []int, g *graph.
 	// Closure: Computes difference in WCET, places in path budget
 	acc_diff := func (x, y interface{}) {
 		min_value, triple := x.(float64), y.(Triple)
-		fmt.Printf("redis[%d] = %f - %f\n", triple.Chain, triple.WCET, min_value)
+		fmt.Printf("Redistribution[%d] = %f - %f\n", triple.Chain, triple.WCET, min_value)
 		path_redistribution_budget[triple.Chain] += (triple.WCET - min_value)
 	}
 
@@ -572,21 +679,21 @@ func map_temporal_data_to_nodes (ts []temporal.Temporal, chains []int, g *graph.
 
 		// Store minimum value in node WCET
 		fmt.Printf("Minimum WCET for node %d is %f\n", key, min_value)
-		node_wcet[key] = min_value
+		node_wcet_map[key] = min_value
 
 		// Update each path with the differnece between their WCET and min
 		value.MapWith(min_value, acc_diff)
 	}
 
-	// For all paths, attempt to find someplace to dump the redistibution budget
+	// For all paths, attempt to find someplace to dump the redistribution budget
 	for i, path := range paths {
 		unshared_nodes := []int{}
 
-		// Don't redistibute if there isn't anything
+		// Don't redistribute if there isn't anything
 		if path_redistribution_budget[i] == 0.0 {
 			continue
 		} else {
-			fmt.Printf("Path %d has a redist budget of %f\n", i, path_redistribution_budget[i])
+			fmt.Printf("Path %d has a redistribution budget of %f\n", i, path_redistribution_budget[i])
 		}
 
 		// Otherwise collect unshared nodes on the path
@@ -606,13 +713,85 @@ func map_temporal_data_to_nodes (ts []temporal.Temporal, chains []int, g *graph.
 		fractional_budget := path_redistribution_budget[i] / float64(len(unshared_nodes))
 
 		for _, n := range unshared_nodes {
-			node_wcet[n] = node_wcet[n] + fractional_budget
+			node_wcet_map[n] = node_wcet_map[n] + fractional_budget
 		}
 	}
 
 	// Return the map
-	return node_wcet
+	return node_wcet_map
 }
+
+
+/*
+ *******************************************************************************
+ *                        Mapping: Benchmarks to nodes                         *
+ *******************************************************************************
+*/
+
+// Encodes a benchmark, and how many times it should be repeated to estimate a WCET
+type Work struct { 
+	Benchmark      *benchmark.Benchmark
+	Iterations     int
+}
+
+// Maps a tuple (benchmark, repeats) to a node based on its WCET
+func map_benchmarks_to_nodes (node_wcet_map map[int]float64, benchmarks []*benchmark.Benchmark) map[int]Work {
+	var node_work_map map[int]Work = make(map[int]Work)
+	var best_fit_benchmark *benchmark.Benchmark = nil
+
+	// Returns true if candidate divides target better than best when flooMagenta
+	is_better_divisor := func (target, candidate, best float64) bool {
+		diff_best := math.Abs(target - math.Floor(target / best) * best)
+		diff_cand := math.Abs(target - math.Floor(target / candidate) * candidate)
+		return diff_cand < diff_best 
+	}
+
+	// Locate benchmark which best divides the given WCET
+	for node, wcet := range node_wcet_map {
+
+		// Reset the best fit
+		best_fit_benchmark = nil
+
+		// Locate the best fit
+		for _, benchmark := range benchmarks {
+
+			// Ignore unset entries
+			if benchmark.Runtime == 0.0 {
+				continue
+			}
+
+			// Ignore candidate benchmarks whose time is > than WCET
+			if benchmark.Runtime > wcet {
+				continue
+			}
+
+			// Automatically select a benchmark if unset
+			if best_fit_benchmark == nil {
+				best_fit_benchmark = benchmark
+				continue
+			}
+
+			// Otherwise compare the difference in remainder, and pick the better one
+			if is_better_divisor(wcet, benchmark.Runtime, best_fit_benchmark.Runtime) {
+				best_fit_benchmark = benchmark
+			}
+		}
+
+		// If none found, then warn
+		if best_fit_benchmark == nil {
+			warn("No benchmark can represent WCET %f for node %d!", wcet, node)
+			node_work_map[node] = Work{Benchmark: nil, Iterations: 0}
+			continue
+		}
+
+		// Enter into map
+		iterations := int(math.Floor(wcet / best_fit_benchmark.Runtime))
+		node_work_map[node] = Work{Benchmark: best_fit_benchmark, Iterations: iterations}
+	}
+
+	return node_work_map
+}
+
 
 /*
  *******************************************************************************
@@ -640,7 +819,7 @@ func get_benchmarks (cfg benchmark.Configuration) ([]*benchmark.Benchmark, error
 	// Check if any need to be evaluated
 	if len(unevaluated) > 0 && (os != "linux") {
 		color.Warn.Printf("Benchmark evaluation not available for %s\n" + 
-			"This step will be ignored - but is needed for simulating WCET\n", os)
+			"This step will be ignoMagenta - but is needed for simulating WCET\n", os)
 		return benchmarks, nil
 	}
 
@@ -656,7 +835,7 @@ func get_benchmarks (cfg benchmark.Configuration) ([]*benchmark.Benchmark, error
 func get_chains (chain_count, chain_avg_len int, chain_variance float64) []int {
 	var chains []int = make([]int, chain_count)
 
-	// Standard deviation is variance squared
+	// Standard deviation is variance squaMagenta
 	std_dev := math.Sqrt(chain_variance)
 
 	// Mean is simply our average chain length
@@ -688,18 +867,6 @@ func get_random_merges (chains []int, merge_p float64) ([]int, []int) {
 	for _, c := range chains {
 		node_count += c
 	}
-	fmt.Printf("There are %d nodes\n", node_count)
-
-	show_nodes := func (nodes []int) {
-		fmt.Printf("{")
-		for i, n := range nodes {
-			fmt.Printf("%d", n)
-			if (i+1) != len(nodes) {
-				fmt.Printf(",")
-			}
-		}
-		fmt.Println("}")
-	}
 
 	// Create node array
 	node_array := []int{}
@@ -707,15 +874,11 @@ func get_random_merges (chains []int, merge_p float64) ([]int, []int) {
 		node_array = append(node_array, i)
 	}
 
-	show_nodes(node_array)
-
 	// Continue to merge until only one node left
 	for len(node_array) > 1 {
 
 		// Number of possible merges between nodes
 		chances := (len(node_array) * (len(node_array) - 1)) / 2
-
-		fmt.Printf("Chances = %d\n", chances)
 
 		// Take a chance for each possible merge
 		for chances > 0 {
@@ -723,18 +886,16 @@ func get_random_merges (chains []int, merge_p float64) ([]int, []int) {
 			// If probability met - merge and reconsider
 			if rand.Float64() < merge_p {
 				i, j := rand.Intn(len(node_array)), rand.Intn(len(node_array))
-				fmt.Printf("Merging node at index %d into node at index %d\n", i, j)
+
 				// Don't count self merges
 				if i == j {
 					continue
 				}
 
 				// Otherwise register a merge
-				fmt.Printf("Removing %d at index %d\n", node_array[i], i)
 				from = append(from, node_array[i])
 				to   = append(to,   node_array[j])
 				node_array = append(node_array[:i], node_array[i+1:]...)
-				show_nodes(node_array)
 				break
 			}
 			chances--
@@ -742,7 +903,6 @@ func get_random_merges (chains []int, merge_p float64) ([]int, []int) {
 
 		// If all chances exhausted, stop
 		if chances == 0 {
-			fmt.Printf("Tried all chances but exhausted ... \n")
 			return from, to
 		}
 	}
@@ -767,7 +927,7 @@ func main () {
 	// Attempt to decode argument
 	err = json.Unmarshal(data, &input)
 	check(err, "Unable to unmarshal the input argument!")
-	fmt.Println(string(data))
+	show_config(input)
 
 	// Extract path
 	path := input.Path
@@ -781,13 +941,14 @@ func main () {
 	for _, b := range benchmarks {
 		fmt.Printf("%16s\t\t\t%.2f ns\t\t\t%.2f%%\t\t\t", b.Name, b.Runtime, b.Uncertainty)
 		if b.Evaluated {
-			color.Green.Printf("Ready\n")
+			color.Black.Printf("Ready\n")
 		} else {
-			color.Red.Printf("No data\n")
+			color.Magenta.Printf("No data\n")
 		}
 	}
 
 	// Generate the chains
+	// TODO: Accept a graph from input
 	chains := get_chains(input.Chain_count, input.Chain_avg_len, input.Chain_variance)
 	colors := get_colors(input.Chain_count)
 	for i, c := range chains {
@@ -832,13 +993,31 @@ func main () {
 	for i := 0; i < len(ts); i++ {
 		fmt.Printf("Chain %d gets (T = %f, C = %f)\n", i, ts[i].T, ts[i].C)
 	}
-	tps := map_temporal_data_to_nodes(ts, chains, g)
-	for key, value := range tps {
+	node_wcet_map := map_wcet_to_nodes(ts, chains, g)
+	for key, value := range node_wcet_map {
 		fmt.Printf("Node %d WCET = %f\n", key, value)
 	}
 
-	// Create graph
-	gvz, err := graph_to_graphviz(chains, tps, g)
+	// Assign benchmark to each node
+	node_work_map := map_benchmarks_to_nodes(node_wcet_map, benchmarks)
+	for node, work_assign := range node_work_map {
+		if work_assign.Benchmark == nil {
+			fmt.Printf("Node %d has been assigned nothing, since no benchmark suits it...\n", node)
+		} else {
+			fmt.Printf("Node %d has been assigned {.Benchmark = %s, .Iterations = %d} for %f <= %d WCET\n", 
+				node, work_assign.Benchmark.Name, work_assign.Iterations, float64(work_assign.Iterations) * work_assign.Benchmark.Runtime, node_wcet_map[node])			
+			}
+	}
+
+	// Extend the graph with synchronizations (which implicity lengthens the chain)
+	g_sync := add_synchronization_nodes(input.Chain_sync_p, g)
+	fmt.Println(g_sync)
+
+	// Synthesize prioritites for the graph
+	// vs := synthesize_priorities(chains, g)
+
+	// Create visualization
+	gvz, err := graph_to_graphviz(chains, node_wcet_map, g)
 	if nil != err {
 		panic(err)
 	}
@@ -846,6 +1025,7 @@ func main () {
 	if nil != err {
 		panic(err)
 	}
+
 
 	// Lookup if DOT is available (exit quietly if not)
 	_, err = exec.LookPath("dot")
@@ -857,6 +1037,24 @@ func main () {
 	dot_cmd := exec.Command("dot", "-Tpng",  "graph.dot",  "-o",  path + "/graph.png")
 	err = dot_cmd.Run()
 	check(err, "Unable to invoke dot!")
+
+	// Export into some intermediate format (JSON)?
+
+	// Application needs
+	// - Number of executors
+	// - Number of nodes (automatic)
+	// - Name
+	// - Using PPE
+
+	// Each method needs:
+	// - benchmark + repetitions
+	// - chain major id
+	// - chain minor id
+	// - map:
+	//     - on_sub_topic -> publish_to_topic (optionally nil)
+	// - priority
+	// - WCET
+	// - 
 
 	fmt.Println("Finished and graph generated!")
 }
