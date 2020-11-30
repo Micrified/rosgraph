@@ -72,6 +72,7 @@ type Node struct {
 	Label     string       // Label for the node
 	Style     string       // Border style
 	Fill      string       // Color indicating fill of the node
+	Shape     string       // Shape of the node
 }
 
 type Graphviz struct {
@@ -200,28 +201,31 @@ func is_isolated (row int, g *graph.Graph) bool {
 	return true
 }
 
+// Returns (column,*edge) at which a given edge is found for a row. Else -1, nil
+func col_for_edge (tag, num, row int, g *graph.Graph) (int, *Edge) {
+	var edge *Edge = nil
+	var col int    = -1
+
+	for i := 0; i < g.Len(); i++ {
+		edges := edgesAt(row, i, g)
+		if len(edges) == 0 {
+			continue
+		}
+		for _, e := range edges {
+			if e.Tag == tag && e.Num == num {
+				edge = e
+				col = i
+				break
+			}
+		}
+	}
+	return col, edge	
+}
+
 // Returns sequence of nodes (rows) visited by a path (chain)
 func get_path (id int, chains []int, g *graph.Graph) []int {
 	var row, col int = -1, -1
 	var path []int = []int{}
-
-	// Closure: Returns column index if given edge found along row, else -1
-	col_for_edge := func (tag, num, row int, g *graph.Graph) int {
-		col := -1
-		for i := 0; i < g.Len(); i++ {
-			edges := edgesAt(row, i, g)
-			if len(edges) == 0 {
-				continue
-			}
-			for _, e := range edges {
-				if e.Tag == tag && e.Num == num {
-					col = i
-					break
-				}
-			}
-		}
-		return col
-	}
 
 	// Chains may only merge between start nodes. Starting edge is in this row
 	start_rows := get_start_rows(chains)
@@ -233,7 +237,7 @@ func get_path (id int, chains []int, g *graph.Graph) []int {
 
 	// Locate row on which starting edge resides
 	for i := 0; i < len(start_rows); i++ {
-		if c := col_for_edge(id, 0, start_rows[i], g); c != -1 {
+		if c, _ := col_for_edge(id, 0, start_rows[i], g); c != -1 {
 			row = start_rows[i]
 			col = c
 			break
@@ -256,15 +260,67 @@ func get_path (id int, chains []int, g *graph.Graph) []int {
 		path = append(path, row)
 
 		// Find and set next column
-		col = col_for_edge(id, len(path) - 1, row, g)
+		col, _ = col_for_edge(id, len(path) - 1, row, g)
 	}
 
-	// Assert: Number of nodes 
-	if len(path) != chains[id] {
-		panic(errors.New(fmt.Sprintf("Node count inconsistent for chain %d", id)))
-	}
+	// Assert: Number of nodes (doesn't work if the graph is extended)
+	// if len(path) != chains[id] {
+	// 	panic(errors.New(fmt.Sprintf("Node count inconsistent for chain %d", id)))
+	// }
 
 	return path
+}
+
+// Removes edge with tag and num at row 'from', col 'to', and shifts it to col 'dest'
+func set_edge_destination (from, to, tag, num, dest int, g *graph.Graph) {
+	var edge *Edge = nil
+
+	// The edge is in row 'from', col 'to'. It should be removed from there first
+	edges := edgesAt(from, to, g)
+	for i, e := range edges {
+		if (e.Tag == tag) && (e.Num == num) {
+			edge = e
+			g.Set(from, to, append(edges[:i], edges[i+1:]...))
+			break
+		}
+	}
+
+	// Assert that an edge was found, as it is expected
+	if nil == edge {
+		check(errors.New("Edge not found!"), "Edge expected at (%d,%d) from chain %d\n",
+			from, to, tag)()
+	}
+
+	// Insert the current edge at the destination column
+	edges = edgesAt(from, dest, g)
+	edges = append(edges, edge)
+	err := g.Set(from, dest, edges)
+	check(err, fmt.Sprintf("Couldn't set edges at (%d,%d) in graph!", from, dest))()
+}
+
+// Extends the given NxN graph to an (N+1)x(N+1) graph, returns new length
+func add_node (g *graph.Graph) int {
+	n := g.Len()
+	var expanded_graph graph.Graph = make([][]interface{}, n+1)
+	for i := 0; i < (n+1); i++ {
+		expanded_graph[i] = make([]interface{}, n+1)
+	}
+	for i := 0; i < n; i++ {
+		for j := 0; j < n; j++ {
+			expanded_graph[i][j] = (*g)[i][j]
+		}
+	}
+	(*g) = expanded_graph
+
+	return (n+1)
+}
+
+// Adds an edge to the graph
+func add_edge (from, to, tag, num int, color string, g *graph.Graph) error {
+	e := &Edge{Tag: tag, Num: num, Color: color}
+	edges := edgesAt(from, to, g)
+	edges = append(edges, e)
+	return g.Set(from, to, edges)
 }
 
 /*
@@ -330,6 +386,7 @@ func merge (from, to int, g *graph.Graph) {
 
 // Returns true if a merge is allowed, per the merge rules
 func can_merge (from, to int, chains []int, g *graph.Graph) bool {
+	var map_chain_to_path map[int]([]int) = make(map[int]([]int))
 
 	// Closure: Returns true if slice contains value
 	contains := func (x int, xs []int) bool {
@@ -341,30 +398,24 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
 		return false
 	}
 
-	// Closure: Returns true if given paths are identical 
-	equal_paths := func (a, b []int) bool {
-		if len(a) != len(b) {
-			return false
-		}
-		for i := 0; i < len(a); i++ {
-			if a[i] != b[i] {
-				return false
-			}
-		}
-		return true
-	}
-
 	// Closure: Returns true if the given path has a cycle
-	cycle_in_path := func (path []int) bool {
-		visited := make(map[int]int)
-		for i := 0; i < len(path); i++ {
-			if _, exists := visited[path[i]]; exists {
-				return true 
-			} else {
-				visited[path[i]] = 1
+	cycle_in_paths := func (chain int, path []int) bool {
+		old_path := map_chain_to_path[chain]
+		map_chain_to_path[chain] = path
+		cycle := false
+		for _, p := range map_chain_to_path {
+			visited := make(map[int]int)
+			for i := 0; i < len(p); i++ {
+				if _, exists := visited[p[i]]; exists {
+					cycle = true
+					break 
+				} else {
+					visited[p[i]] = 1
+				}
 			}
 		}
-		return false
+		map_chain_to_path[chain] = old_path
+		return cycle
 	}
 
 	// Closure: Replaces occurrences of 'match' with 'replacement' in given path, returns new path
@@ -380,11 +431,52 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
 		return clone
 	}
 
-	// Condition: Starting elements are special and cannot merge with non-starting elements
+	// Closure: Returns true if every chain has at least one unique node
+	unique_paths := func (from, to int) bool {
+		visited := make([]int, g.Len())
+
+		for _, path := range map_chain_to_path {
+			for _, node := range path {
+				if node == from {
+					visited[to]++
+				} else {
+					visited[node]++
+				}
+			}
+		}
+		for _, path := range map_chain_to_path {
+			unique_nodes := 0
+			for _, node := range path {
+				if visited[node] == 1 {
+					unique_nodes++
+				}
+			}
+			if unique_nodes == 0 {
+				return false
+			}
+		}
+		return true
+	}
+
+	ppath := func (path []int) {
+		fmt.Printf("{ ")
+		for i := 0; i < len(path); i++ {
+			fmt.Printf("%d ", path[i])
+		}
+		fmt.Printf(" }\n")
+	}
+
+	// Compute all current paths for the chains
+	for i := 0; i < len(chains); i++ {
+		map_chain_to_path[i] = get_path(i, chains, g)
+		ppath(map_chain_to_path[i])
+	}
+
+	// Condition: Starting elements are special and cannot merge
 	// Solution:  If 'from' and 'to' are not the same type of element - return false
 	start_rows := get_start_rows(chains)
 	if contains(from, start_rows) != contains(to, start_rows) {
-		fmt.Printf("Cannot merge %d and %d, as they are not of the same type!\n", from, to)
+		fmt.Printf("Cannot merge %d and %d, as nodes are of incompatible types!\n", from, to)
 		return false
 	}
 
@@ -396,26 +488,28 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
 	}
 
 	// Condition: A path cannot have loops
-	// Solution: If 'to' and 'from' are from the same chain - return false
-	to_chain_id, from_chain_id := get_row_chain(to, chains), get_row_chain(from, chains)
-	path_to, path_from := get_path(to_chain_id, chains, g), get_path(from_chain_id, chains, g)
-	if to_chain_id == from_chain_id || cycle_in_path(replace_in_path(from, to, path_from)) {
-		fmt.Printf("Cannot merge %d and %d, as a cycle is formed in a path!\n", from, to)
-		return false
+	// Solution:  Replace every path containing 'from' with 'to'. Then check for a loop
+	for chain_id, chain_path := range map_chain_to_path {
+		if cycle_in_paths(chain_id, replace_in_path(from, to, chain_path)) {
+			fmt.Printf("Cannot merge %d->%d as a cycle is formed in chain %d\n", from, to, chain_id)
+			return false
+		}
 	}
 
 	// Condition: Chains with only one callback cannot be merged (shortcut for next rule)
 	// Solution: If either node belongs to chain of length 1 - return false
+	to_chain_id, from_chain_id := get_row_chain(to, chains), get_row_chain(from, chains)
 	if chains[to_chain_id] == 1 || chains[from_chain_id] == 1 {
-		fmt.Printf("Cannot merge %d and %d, as one of the chains will not be distinguishable\n", from, to)
+		fmt.Printf("Cannot merge %d and %d, as one of the chains will not be distinguishable (1)\n", from, to)
 	}
 
 	// Condition: Don't allow chains to be completely merged with one another
-	// Solution: If node being merged is the only differing element between the paths
-	//           of the 'to' and 'from', then disallow merge
-	if equal_paths(path_to, replace_in_path(from, to, path_from)) {
-		fmt.Printf("Cannot merge %d and %d, as the chains will not be distinguishable\n", from, to)
-		return false
+	// Solution: If merging the node means there remains no unique node between the 
+	//           chain being merged into, or the chain merging, from all other other 
+	//           chains - then disallow the merge
+	if unique_paths(from, to) == false {
+		fmt.Printf("Cannot merge %d and %d, as the chains will not be distinguishable (2.1)\n", from, to)
+		return false		
 	}
 
 	// Condition: A merged element may not be connected to again (no longer 'exists')
@@ -492,10 +586,11 @@ func generate_from_template (data interface{}, in_path, out_path string) error {
 */
 
 // Converts internal graph representation to graphviz data structure
-func graph_to_graphviz (chains []int, temporal_map map[int]float64, g *graph.Graph) (Graphviz, error) {
+func graph_to_graphviz (chains []int, node_wcet_map map[int]float64, node_prio_map map[int]int, g *graph.Graph) (Graphviz, error) {
 	nodes := []Node{}
 	links := []Link{}
 
+	// Closure: Returns true if the given node is connected in the graph
 	is_connected := func (row int, g *graph.Graph) bool {
 		for i := 0; i < g.Len(); i++ {
 			row_edges, col_edges := edgesAt(row, i, g), edgesAt(i, row, g) 
@@ -506,15 +601,36 @@ func graph_to_graphviz (chains []int, temporal_map map[int]float64, g *graph.Gra
 		return false
 	}
 
+	// Closure: Returns true if the given chain has a length of one
 	length_one_chain := func (row int, chains []int) bool {
 		return chains[get_row_chain(row, chains)] == 1
-	} 
+	}
+
+	// Closure: Returns the number of nodes belonging to chains
+	get_chain_node_count := func (chains []int) int {
+		sum := 0
+		for i := 0; i < len(chains); i++ {
+			sum += chains[i]
+		}
+		return sum
+	}
+
+	// Obtain the number of nodes that belong to chains
+	n_chain_nodes := get_chain_node_count(chains)
 
 	// Create all nodes (but only if connected or chain has length 1)
 	for i := 0; i < g.Len(); i++ {
 		if is_connected(i, g) || length_one_chain(i, chains) {
-			label := fmt.Sprintf("N%d\n(wcet=%.2f)", i, temporal_map[i])
-			nodes = append(nodes, Node{Id: i, Label: label, Style: "solid", Fill: "#FFFFFF"})			
+
+			// It's a chain node if below the original graph node count
+			if i < n_chain_nodes {
+				label := fmt.Sprintf("N%d\n(wcet=%.2f)\nprio=%d", i, node_wcet_map[i], node_prio_map[i])
+				nodes = append(nodes, Node{Id: i, Label: label, Style: "filled", Fill: "#FFFFFF", Shape: "circle"})				
+			} else {
+				label := fmt.Sprintf("N%d\n(SYNC)", i)
+				nodes = append(nodes, Node{Id: i, Label: label, Style: "filled", Fill: "#FFE74C", Shape: "diamond"})
+			}
+		
 		}
 	}
 
@@ -538,15 +654,35 @@ func graph_to_graphviz (chains []int, temporal_map map[int]float64, g *graph.Gra
  *******************************************************************************
 */
 
-// A minimal Edge, which holds the source and destination node
-type MinEdge struct {
+// A container holding an edge outside of the graph context (with from->to info)
+type ExtendedEdge struct {
 	From   int
 	To     int
+	Edge   *Edge
 }
 
 // Creates an extended version of the supplied graph by adding synchronization points
-func add_synchronization_nodes (chain_sync_p float64, g *graph.Graph) *graph.Graph {
-	node_edge_map := make(map[int]([]MinEdge))
+func add_synchronization_nodes (chain_sync_p float64, chains []int, g *graph.Graph) *graph.Graph {
+	map_chain_to_path := make(map[int]([]int))
+	node_edge_map     := make(map[int]([]ExtendedEdge))
+
+	// Closure: Inserts a link into the given path
+	insert_in_path := func (after_node, new_node, tag int) {
+		path := map_chain_to_path[tag]
+		new_path := []int{}
+		for i := 0; i < len(path); i++ {
+			new_path = append(new_path, path[i])
+			if path[i] == after_node {
+				new_path = append(new_path, new_node)
+			}
+		}
+		map_chain_to_path[tag] = new_path
+	}
+
+	// Compute all current paths for the chains
+	for i := 0; i < len(chains); i++ {
+		map_chain_to_path[i] = get_path(i, chains, g)
+	}
 
 	// Locate all nodes with two or more incoming edges
 	for i := 0; i < g.Len(); i++ {
@@ -563,49 +699,172 @@ func add_synchronization_nodes (chain_sync_p float64, g *graph.Graph) *graph.Gra
 			}
 
 			// Build the minimal edge slice
-			min_edges := []MinEdge{}
-			for k := 0; k < len(edges); k++ {
-				min_edges = append(min_edges, MinEdge{From: j, To: i})
+			extended_edges := []ExtendedEdge{}
+			for _, e := range edges {
+				extended_edges = append(extended_edges, ExtendedEdge{From: j, To: i, Edge: e})
 			}
 
 			// Otherwise append them to the existing slice
 			if slice := node_edge_map[i]; slice != nil {
-				node_edge_map[i] = append(slice, min_edges...)
+				node_edge_map[i] = append(slice, extended_edges...)
 			} else {
-				node_edge_map[i] = min_edges
+				node_edge_map[i] = extended_edges
 			}
 		} 
 	}
 
 	// Perform a random merge between two of the pairs
-	for node, edges := range node_edge_map {
-		fmt.Printf("Node %d has %d incoming edges\n", node, len(edges))
+	for node, es := range node_edge_map {
+		fmt.Printf("Node %d has %d incoming edges\n", node, len(es))
 
 		// Compute the number of attempts possible
-		n := len(edges)
-		attempts := (n * (n - 1)) / 2
+		for len(es) >= 2 {
+			n := len(es)
+			attempts := (n * (n - 1)) / 2
 
-		// Attempt 
-		for i := 0; i < attempts; i++ {
+			// Assume no sync was made
+			sync := false
 
-			// Continue if inverse P 
-			if (rand.Float64() >= chain_sync_p) {
-				continue
+			// Attempt 
+			for i := 0; i < attempts; i++ {
+				var err error = nil
+
+				// Continue if inverse P 
+				if (rand.Float64() >= chain_sync_p) {
+					continue
+				}
+
+				// Otherwise shuffle
+				rand.Shuffle(n, func(x, y int){ es[x], es[y] = es[y], es[x] })
+
+				// Pick first two
+				a, b := es[0], es[1]
+
+				// Issue a directive
+				fmt.Printf("Will be placing a sync node between %d-[%d]->%d, and %d-[%d]->%d\n",
+					a.From, a.Edge.Tag, a.To, b.From, b.Edge.Tag, b.To)
+				fmt.Printf("%s", g.String(show))
+
+				// Expand the graph with a new node
+				n := add_node(g)
+
+				fmt.Printf("After:\n%s", g.String(show))
+
+				// Update the path with the new node
+				insert_in_path(a.From, (n-1), a.Edge.Tag)
+				insert_in_path(b.From, (n-1), b.Edge.Tag)
+
+				// Move edges to new node
+				set_edge_destination(a.From, a.To, a.Edge.Tag, a.Edge.Num, (n-1), g)
+				set_edge_destination(b.From, b.To, b.Edge.Tag, b.Edge.Num, (n-1), g)
+
+				fmt.Printf("Set destination ...\n%s", g.String(show))
+
+				// Wire node to destination
+				err = add_edge((n-1), a.To, a.Edge.Tag, a.Edge.Num + 1, a.Edge.Color, g)
+				check(err, "Unable to add edge!")()
+				err = add_edge((n-1), b.To, b.Edge.Tag, b.Edge.Num + 1, b.Edge.Color, g)
+				check(err, "Unable to add edge!")()
+
+				fmt.Printf("With new edges:\n%s", g.String(show))
+
+				// Remove those two nodes from consideration, as they are already synced
+				sync = true
+				break
 			}
 
-			// Otherwise shuffle
-			rand.Shuffle(n, func(x, y int){ edges[x], edges[y] = edges[y], edges[x] })
+			// If a synchronization was performed, remove the two edges involved and resample
+			if sync == false {
+				es = es[2:]
+				continue
+			}
+			break		
+		}
+	}
 
-			// Pick first two
-			first, second := edges[0], edges[1]
+	ppath := func (path []int) {
+		fmt.Printf("{ ")
+		for i := 0; i < len(path); i++ {
+			fmt.Printf("%d ", path[i])
+		}
+		fmt.Printf(" }\n")
+	}
 
-			// Issue a directive
-			fmt.Printf("Will be placing a sync node between %d->%d, and %d->%d\n",
-				first.From, first.To, second.From, second.To)
+	// Echo all paths. This is needed since since synchronization nodes alter order
+	for key, value := range map_chain_to_path {
+		fmt.Printf("%d: ", key); ppath(value)
+	}
+
+	// For each path, find the edge in the given row, and adjust its number
+	for chain, path := range map_chain_to_path {
+		for i, j := 0, 1; i < (len(path) - 1); i, j = i+1, j+1 {
+			edges := edgesAt(path[i], path[j], g)
+			for _, e := range edges {
+				if e.Tag == chain {
+					e.Num = i
+					break
+				}
+			}
 		}
 	}
 
 	return nil
+}
+
+/*
+ *******************************************************************************
+ *                       Resolution: Overlapping timers                        *
+ *******************************************************************************
+*/
+
+func resolve_shared_timers (ts []temporal.Temporal, us []float64, chains []int,
+	g *graph.Graph) []temporal.Temporal {
+
+    // Create all paths, and a map for associating a timer with a set of chains
+	paths, map_timer_to_paths := make([][]int, len(chains)), make(map[int]([]int))
+
+	// Create the resolved temporal data by copying the given slice
+	rs := make([]temporal.Temporal, len(ts))
+	copy(rs, ts)
+
+	// Compute the paths of all chains
+	for i, _ := range chains {
+		paths[i] = get_path(i, chains, g)
+	}
+
+	// For each start (timer) node, collect all paths that start with it
+	for chain, path := range paths {
+
+		// Assume paths nonzero in length. Timer is first node
+		timer := path[0]
+
+		// Either initialize or add to the existing slice
+		if sharing, exists := map_timer_to_paths[timer]; !exists {
+			map_timer_to_paths[timer] = []int{chain}
+		} else {
+			map_timer_to_paths[timer] = append(sharing, chain)
+		}
+	}
+
+	// For all timers, pick a single value for all chains using it
+	for timer, sharing := range map_timer_to_paths {
+
+		// Find chain that ownes timer
+		timer_owner_chain := get_row_chain(timer, chains)
+
+		// Debug
+		if len(sharing) > 1 {
+			fmt.Printf("More than one chain start from node %d!\n", timer)
+		}
+
+		// Update period and computation of all chains sharing the timer
+		for _, chain := range sharing {
+			rs[chain].T = rs[timer_owner_chain].T
+			rs[chain].C = rs[chain].T * us[chain]
+		}
+	}
+
+	return rs
 }
 
 /*
@@ -728,15 +987,9 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
  *******************************************************************************
 */
 
-// Encodes a benchmark, and how many times it should be repeated to estimate a WCET
-type Work struct { 
-	Benchmark      *benchmark.Benchmark
-	Iterations     int
-}
-
 // Maps a tuple (benchmark, repeats) to a node based on its WCET
-func map_benchmarks_to_nodes (node_wcet_map map[int]float64, benchmarks []*benchmark.Benchmark) map[int]Work {
-	var node_work_map map[int]Work = make(map[int]Work)
+func map_benchmarks_to_nodes (node_wcet_map map[int]float64, benchmarks []*benchmark.Benchmark) map[int]benchmark.Work {
+	var node_work_map map[int]benchmark.Work = make(map[int]benchmark.Work)
 	var best_fit_benchmark *benchmark.Benchmark = nil
 
 	// Returns true if candidate divides target better than best when flooMagenta
@@ -780,16 +1033,90 @@ func map_benchmarks_to_nodes (node_wcet_map map[int]float64, benchmarks []*bench
 		// If none found, then warn
 		if best_fit_benchmark == nil {
 			warn("No benchmark can represent WCET %f for node %d!", wcet, node)
-			node_work_map[node] = Work{Benchmark: nil, Iterations: 0}
+			node_work_map[node] = benchmark.Work{Benchmark: nil, Iterations: 0}
 			continue
 		}
 
 		// Enter into map
 		iterations := int(math.Floor(wcet / best_fit_benchmark.Runtime))
-		node_work_map[node] = Work{Benchmark: best_fit_benchmark, Iterations: iterations}
+		node_work_map[node] = benchmark.Work{Benchmark: best_fit_benchmark, Iterations: iterations}
 	}
 
 	return node_work_map
+}
+
+/*
+ *******************************************************************************
+ *                         Mapping: Priority to nodes                          *
+ *******************************************************************************
+*/
+
+// Maps chains to priorities
+func synthesize_node_priorities (chains, priorities []int, g *graph.Graph) map[int]int {
+	node_prio_map := make(map[int]int)
+	paths         := make([][]int, len(chains))
+
+	// Closure: Simple max
+	max := func (a, b int) int {
+		if a > b {
+			return a
+		} else {
+			return b
+		}
+	}
+
+	// Closure: Returns the number of nodes belonging to chains
+	get_chain_node_count := func (chains []int) int {
+		sum := 0
+		for i := 0; i < len(chains); i++ {
+			sum += chains[i]
+		}
+		return sum
+	}
+
+	// Obtain the number of nodes that belong to chains
+	n_chain_nodes := get_chain_node_count(chains)
+
+	// Setup the paths
+	for i := 0; i < len(chains); i++ {
+		paths[i] = get_path(i, chains, g)
+	}
+
+	// Go down the paths of all chains. Assign all nodes MAX(old_prio, current_prio)
+	for chain, path := range paths {
+		priority := priorities[chain]
+		for _, node := range path {
+			existing_priority, exists := node_prio_map[node]
+			if !exists {
+				node_prio_map[node] = priority
+				continue
+			}
+			if priority > existing_priority {
+				node_prio_map[node] = priority
+			}
+		}
+	}
+
+	// Go down the paths of all chains. If you hit a sync, then adopt the sync value
+	// and propagate all the way back down
+	for i := 0; i < len(chains); i++ {
+		path := paths[i]
+		min_priority := priorities[i]
+
+		for j := (len(path) - 1); j >= 0; j-- {
+			node := path[j]
+
+			// Update minimum priority if a sync node
+			if node >= n_chain_nodes {
+				min_priority = max(min_priority, node_prio_map[node])
+			}
+
+			// Apply minimum priority
+			node_prio_map[node] = max(min_priority, node_prio_map[node])
+		}
+	}
+
+	return node_prio_map
 }
 
 
@@ -854,7 +1181,7 @@ func get_chains (chain_count, chain_avg_len int, chain_variance float64) []int {
 // Returns a list of random RGB color hex strings
 func get_colors (n int) []string {
 	chain_colors, err := colors.RandomColors(n)
-	check(err, fmt.Sprintf("Unable to generate %d random colors!", n))
+	check(err, fmt.Sprintf("Unable to generate %d random colors!", n))()
 	return chain_colors
 }
 
@@ -926,7 +1253,7 @@ func main () {
 
 	// Attempt to decode argument
 	err = json.Unmarshal(data, &input)
-	check(err, "Unable to unmarshal the input argument!")
+	check(err, "Unable to unmarshal the input argument!")()
 	show_config(input)
 
 	// Extract path
@@ -993,6 +1320,20 @@ func main () {
 	for i := 0; i < len(ts); i++ {
 		fmt.Printf("Chain %d gets (T = %f, C = %f)\n", i, ts[i].T, ts[i].C)
 	}
+
+	// TODO: Some chains may begin with the same timer, meaning their period is
+	// not independent and thus their computation time needs to be fixed to match
+	// utilization!
+	// 1. Determine which chains are sharing timers
+	// 2. Pick one
+	// 3. Update the temporal data
+	ts = resolve_shared_timers(ts, us, chains, g)
+	fmt.Printf("Printing chains again after resolving conflicts...\n")
+	for i := 0; i < len(ts); i++ {
+		fmt.Printf("Chain %d gets (T = %f, C = %f)\n", i, ts[i].T, ts[i].C)
+	}
+
+	// Map computation time to nodes
 	node_wcet_map := map_wcet_to_nodes(ts, chains, g)
 	for key, value := range node_wcet_map {
 		fmt.Printf("Node %d WCET = %f\n", key, value)
@@ -1010,14 +1351,28 @@ func main () {
 	}
 
 	// Extend the graph with synchronizations (which implicity lengthens the chain)
-	g_sync := add_synchronization_nodes(input.Chain_sync_p, g)
+	g_sync := add_synchronization_nodes(input.Chain_sync_p, chains, g)
 	fmt.Println(g_sync)
 
+	// Print paths
+	fmt.Println("UPDATED PATHS AFTER SYNC")
+	for i := 0; i < input.Chain_count; i++ {
+		ppath(get_path(i, chains, g))
+	}
+
 	// Synthesize prioritites for the graph
-	// vs := synthesize_priorities(chains, g)
+	priorities := make([]int, input.Chain_count)
+	for i := 0; i < input.Chain_count; i++ {
+		priorities[i] = i
+		fmt.Printf("Chain %d has priority %d\n", i, i)
+	}
+	node_prio_map := synthesize_node_priorities(chains, priorities, g)
+	for key, value := range node_prio_map {
+		fmt.Printf("Node %d has prio %d\n", key, value)
+	}
 
 	// Create visualization
-	gvz, err := graph_to_graphviz(chains, node_wcet_map, g)
+	gvz, err := graph_to_graphviz(chains, node_wcet_map, node_prio_map, g)
 	if nil != err {
 		panic(err)
 	}
@@ -1025,7 +1380,6 @@ func main () {
 	if nil != err {
 		panic(err)
 	}
-
 
 	// Lookup if DOT is available (exit quietly if not)
 	_, err = exec.LookPath("dot")
@@ -1036,7 +1390,7 @@ func main () {
 	// Otherwise use dot to produce a graph
 	dot_cmd := exec.Command("dot", "-Tpng",  "graph.dot",  "-o",  path + "/graph.png")
 	err = dot_cmd.Run()
-	check(err, "Unable to invoke dot!")
+	check(err, "Unable to invoke dot!")()
 
 	// Export into some intermediate format (JSON)?
 
@@ -1047,9 +1401,12 @@ func main () {
 	// - Using PPE
 
 	// Each method needs:
+	// - is a timer
+	// - period if a timer
 	// - benchmark + repetitions
 	// - chain major id
 	// - chain minor id
+	// - indicator if it is the end of the chain
 	// - map:
 	//     - on_sub_topic -> publish_to_topic (optionally nil)
 	// - priority

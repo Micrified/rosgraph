@@ -9,7 +9,7 @@ layout=dot
 ## Nodes
 node [shape=circle];
 {{- range $i, $n := .Nodes}}
-N{{$n.Id}} [label="{{$n.Label}}", style="{{$n.Style}}"]
+N{{$n.Id}} [label="{{$n.Label}}", style="{{$n.Style}}", fillcolor="{{.Fill}}", shape="{{.Shape}}"]
 {{- end}}
 
 ## Links
