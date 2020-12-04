@@ -1,28 +1,25 @@
 digraph G {
 graph[nodesep=1, ranksep=2]
 
-## Topics cluster
-subgraph cluster_topics {
-	label="Topics";
-	node[shape=box];
-	{{- range .Topics}}
-	{{.Name}} [label="{{.Name}}"];
-	{{- end}}
-}
-
 ## Executor clusters
-{{- range .Executors}}
-subgraph cluster_{{.Name}} {
-	label="{{.Name}}";
+{{- $a := .App}}
+{{- range $a.Executors}}
+{{- $executor_id := .ID}}
+subgraph cluster_{{$executor_id}} {
+	label="E{{$executor_id}}";
 	{{- range .Nodes}}
-	{{- $length := len $.Callbacks}}
+	{{- $node_id := .ID}}
+	{{- $length := len .Callbacks}}
 	{{- if eq $length 0}}
 	{{- else}}
-	subgraph cluster_{{.Name}} {
-		label="{{.Name}}";
+	subgraph cluster_{{$executor_id}}_{{$node_id}} {
+		label="N{{$node_id}}";
 		node[shape=circle];
 		{{- range .Callbacks}}
-			{{.Name}} [label="{{.Name}}{{range .Merged}}\n+\n{{.Name}}{{end}}" {{if .Timer}}, style=bold{{end}}];
+			C{{.ID}} [label="C{{.ID}}" style="filled", fillcolor="{{if .Timer}}#AAAAFF{{else}}#FFFFFF{{end}}"];
+		{{- end}}
+		{{- range .Filters}}
+			C{{.ID}} [label="C{{.ID}}\nSYNC", style="filled", fillcolor="#FFE74C", shape="diamond"];
 		{{- end}}
 	}
 	{{- end}}
@@ -31,8 +28,8 @@ subgraph cluster_{{.Name}} {
 {{- end}}
 
 ## Edges
-{{- range .Edges}}
-{{.From}}->{{.To}} [color="{{.Color}}"];
+{{- range .Links}}
+C{{.From}}->C{{.To}} [label="{{.Label}}", color="{{.Color}}"];
 {{- end}}
 
 }

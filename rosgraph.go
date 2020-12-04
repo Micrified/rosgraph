@@ -19,6 +19,7 @@ import (
 	"set"
 	"benchmark"
 	"colors"
+	"rosgraph/gen"
 
 	// Third party packages
 	"github.com/gookit/color"
@@ -61,23 +62,41 @@ type Edge struct {
 */
 
 type Link struct {
-	From      int          // Source node
-	To        int          // Destination node
-	Color     string       // Link color
-	Label     string       // Link label
+	From      int                 // Source node
+	To        int                 // Destination node
+	Color     string              // Link color
+	Label     string              // Link label
 }
 
 type Node struct {
-	Id        int          // Node ID
-	Label     string       // Label for the node
-	Style     string       // Border style
-	Fill      string       // Color indicating fill of the node
-	Shape     string       // Shape of the node
+	Id        int                 // Node ID
+	Label     string              // Label for the node
+	Style     string              // Border style
+	Fill      string              // Color indicating fill of the node
+	Shape     string              // Shape of the node
 }
 
-type Graphviz struct {
-	Nodes     []Node       // Pointer to nested clusters
-	Links     []Link       // Pointer to slice of links
+type Graphviz_graph struct {
+	Nodes     []Node              // Nested clusters
+	Links     []Link              // Slice of links
+}
+
+type Graphviz_application struct {
+	App       *gen.Application    // Application structure
+	Links     []Link              // Slice of links
+}
+
+/*
+ *******************************************************************************
+ *                          Template Type Definitions                          *
+ *******************************************************************************
+*/
+
+type ROS_Executor struct {
+	Includes    []string          // Include directives for C++ program
+	MsgType     string            // Program message type
+	PPE         bool              // Whether to use PPE types and semantics
+	Executor    gen.Executor      // The executor to parse
 }
 
 /*
@@ -585,8 +604,26 @@ func generate_from_template (data interface{}, in_path, out_path string) error {
  *******************************************************************************
 */
 
+// Converts internal graph representation to graphviz application data structure
+func application_to_graphviz (a *gen.Application, g *graph.Graph) (Graphviz_application, error) {
+	links := []Link{}
+
+	// Create all links
+	for i := 0; i < g.Len(); i++ {
+		for j := 0; j < g.Len(); j++ {
+			edges := edgesAt(i, j, g)
+			for _, e := range edges {
+				label := fmt.Sprintf("%d.%d", e.Tag, e.Num)
+				links = append(links, Link{From: i, To: j, Color: e.Color, Label: label})
+			}
+		}
+	}
+
+	return Graphviz_application{App: a, Links: links}, nil
+}
+
 // Converts internal graph representation to graphviz data structure
-func graph_to_graphviz (chains []int, node_wcet_map map[int]float64, node_prio_map map[int]int, g *graph.Graph) (Graphviz, error) {
+func graph_to_graphviz (chains []int, node_wcet_map map[int]float64, node_prio_map map[int]int, g *graph.Graph) (Graphviz_graph, error) {
 	nodes := []Node{}
 	links := []Link{}
 
@@ -645,7 +682,7 @@ func graph_to_graphviz (chains []int, node_wcet_map map[int]float64, node_prio_m
 		}
 	}
 
-	return Graphviz{Nodes: nodes, Links: links}, nil
+	return Graphviz_graph{Nodes: nodes, Links: links}, nil
 }
 
 /*
@@ -1329,8 +1366,10 @@ func main () {
 	// 3. Update the temporal data
 	ts = resolve_shared_timers(ts, us, chains, g)
 	fmt.Printf("Printing chains again after resolving conflicts...\n")
+	periods := []float64{}
 	for i := 0; i < len(ts); i++ {
 		fmt.Printf("Chain %d gets (T = %f, C = %f)\n", i, ts[i].T, ts[i].C)
+		periods = append(periods, ts[i].T)
 	}
 
 	// Map computation time to nodes
@@ -1355,8 +1394,10 @@ func main () {
 	fmt.Println(g_sync)
 
 	// Print paths
+	paths := []([]int){}
 	fmt.Println("UPDATED PATHS AFTER SYNC")
 	for i := 0; i < input.Chain_count; i++ {
+		paths = append(paths, get_path(i, chains, g))
 		ppath(get_path(i, chains, g))
 	}
 
@@ -1393,12 +1434,40 @@ func main () {
 	check(err, "Unable to invoke dot!")()
 
 	// Export into some intermediate format (JSON)?
+	app := gen.Init_Application("Foo", true, 3)
+	app.From_Graph(chains, paths, periods, node_wcet_map, node_work_map, node_prio_map, g)
+
+	// Create a vizualization
+	apz, err := application_to_graphviz(app, g)
+	check(err, "Unable to create application graphviz!")()
+	err = generate_from_template(apz, path + "/templates/application.dt", "application.dot")
+	check(err, "Unable to create dot file for application!")()
+
+
+	// Otherwise use dot to produce a graph
+	dot_cmd = exec.Command("dot", "-Tpng",  "application.dot",  "-o",  path + "/application.png")
+	err = dot_cmd.Run()
+	check(err, "Unable to invoke dot!")()
 
 	// Application needs
 	// - Number of executors
 	// - Number of nodes (automatic)
 	// - Name
 	// - Using PPE
+	executors := []ROS_Executor{}
+	for _, exec := range app.Executors {
+		executors = append(executors, ROS_Executor{
+			Includes: []string{"std_msgs/msg/int64.hpp"},
+			MsgType:  "std_msgs::msg::Int64",
+			PPE:      app.PPE,
+			Executor: exec,
+		})
+	}
+	for i, exec := range executors {
+		exec_name := fmt.Sprintf("executor_%d.cpp", i) 
+		err = generate_from_template(exec, path + "/templates/executor.tmpl", exec_name)
+		check(err, "Unable to create template file!")()
+	}
 
 	// Each method needs:
 	// - is a timer
