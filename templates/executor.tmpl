@@ -1,0 +1,141 @@
+#include <chrono>
+#include <memory>
+#include "rclcpp/rclcpp.hpp"
+{{- range .Includes}}
+#include "{{.}}"
+{{- end}}
+
+// Placeholders
+using std::placeholders::_1;
+{{- $meta := .}}
+{{- $executor := .Executor}}
+{{- $executor_id := $executor.ID}}
+{{range $executor.Nodes}}
+class N{{.ID}} : public rclcpp::Node
+{
+private:
+{{- range .Callbacks}}
+	{{- $callback := .}}
+    {{- if .Timer}}
+    rclcpp::TimerBase::SharedPtr timer_{{.ID}};
+    {{- end}}
+    {{- range $i, $from := .Topics_rx}}
+    {{- $ch := index $callback.Topics_cx $i}}
+    rclcpp::Subscription<{{$meta.MsgType}}>::SharedPtr sub_{{$from}}_{{$callback.ID}}_{{$ch}};
+    {{- end}}
+    {{- range $i, $to := .Topics_tx}}
+    {{- $ch := index $callback.Topics_cx $i}}
+    rclcpp::Publisher<{{$meta.MsgType}}>::SharedPtr pub_{{$callback.ID}}_{{$to}}_{{$ch}};
+    {{- end}}
+{{- end}}
+{{- range .Callbacks}}
+	{{- $callback := .}}
+	void C{{.ID}} ({{- if .Timer}}{{else}}{{$meta.MsgType}}::SharedPtr msg_p, std::string topic{{end}})
+	{
+		// WCET ~{{.WCET}}ns via TACLe benchmarks
+		for (int i = 0; i < {{.Repeats}}; ++i) {
+			{{.Benchmark}}();
+		}
+
+		// Relay
+		{{range $i, $from := .Topics_rx}}
+		{{- $to := index $callback.Topics_tx $i}}
+		{{- $ch := index $callback.Topics_cx $i}}
+
+		{{- if eq $to -1}}
+		{{- if eq $from -1}}
+		// TODO: Publish timing information (one off timer)
+		{{- else}}
+		if (topic == "T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}") {
+			// TODO: Publish timing information
+			return;
+		}
+		{{- end}}
+		{{- else}}
+		{{- if eq $from -1}}
+		pub_{{$callback.ID}}_{{$to}}_{{$ch}}->publish(msg_p);
+		{{- else}}
+		if (topic == "T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}") {
+			pub_{{$callback.ID}}_{{$to}}_{{$ch}}->publish(msg_p);
+		}
+		{{- end}}
+		{{- end}}
+		{{- end}}
+	}
+{{- end}}
+public:
+	{{$node_id := .ID}}
+	N{{$node_id}}(): Node("N{{.ID}}", rclcpp::NodeOptions().start_parameter_event_publisher(false))
+	{
+		// Init timers
+		{{- range .Callbacks}}
+		{{- if .Timer}}
+		{{- if $meta.PPE}}
+		timer_{{.ID}} = this->create_wall_timer(std::chrono::nanoseconds({{.Period}}),
+			std::bind(&N{{$node_id}}::C{{.ID}}, this), nullptr, {{.Priority}});
+		{{- else}}
+		timer_{{.ID}} = this->create_wall_timer(std::chrono::nanoseconds({{.Period}}),
+			std::bind(&N{{$node_id}}::C{{.ID}}, this), nullptr);
+		{{- end}}
+		{{- end}}
+		{{- end}}
+
+		// Init publishers
+		{{- range .Callbacks}}
+		{{- $callback := .}}
+		{{- range $i, $to := .Topics_tx}}
+		{{- $from := index $callback.Topics_rx $i}}
+		{{- $ch := index $callback.Topics_cx $i}}
+		pub_{{$callback.ID}}_{{$to}}_{{$ch}} = this->create_publisher<$meta.MsgType>("T_N{{$callback.ID}}_N{{$to}}_C{{$ch}}", 10);
+		{{- end}}
+		{{- end}}
+
+		// Init subscriptions
+		{{- range .Callbacks}}
+		{{- $callback := .}}
+		{{- range $i, $to := .Topics_tx}}
+		{{- $from := index $callback.Topics_rx $i}}
+		{{- $ch := index $callback.Topics_cx $i}}
+		{{- if $meta.PPE}}
+		sub_{{$from}}_{{$callback.ID}}_{{$ch}} = this->create_priority_subscription<$meta.MsgType>("T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}", 10,
+			std::bind(&N{{$node_id}}::C{{$callback.ID}}, this, _1), {{$callback.Priority}});
+		{{- else}}
+		sub_{{$from}}_{{$callback.ID}}_{{$ch}} = this->create_subscription<$meta.MsgType>("T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}", 10,
+			std::bind(&N{{$node_id}}::C{{$callback.ID}}, this, _1));
+		{{- end}}
+		{{- end}}
+		{{- end}}
+	}
+};
+{{end}}
+
+int main (int argc, char *argv[])
+{
+	rclcpp::init(argc, argv);
+
+	// Init nodes
+	{{- range $executor.Nodes}}
+	auto N{{.ID}} = std::make_shared<N{{.ID}}>();
+	{{- end}}
+
+	// Init executor
+	{{- if $meta.PPE}}
+	rclcpp::executors::PreemptivePriorityExecutor exec(rclcpp::ExecutorOptions(), {50,99}, rclcpp::executors::P_FP);
+	{{- else}}
+	rclcpp::executors::SingleThreadedExecutor exec;
+	{{- end}}
+
+	// Add nodes
+	{{- range $executor.Nodes}}
+	exec.add_node(N{{.ID}});
+	{{- end}}
+
+	// Spin (for hyper-period)
+	// TODO: implement some kind of spin functionality with a timeout, and a callback
+	exec.spin();
+
+	// Stop
+	rclcpp::shutdown();
+
+	return EXIT_SUCCESS;
+}
