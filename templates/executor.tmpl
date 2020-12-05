@@ -6,8 +6,9 @@
 {{- end}}
 
 // Placeholders
-using std::placeholders::_1;
 {{- $meta := .}}
+using std::placeholders::_1;
+using FilterPolicy = {{$meta.FilterPolicy}}<{{$meta.MsgType}}, {{$meta.MsgType}}>;
 {{- $executor := .Executor}}
 {{- $executor_id := $executor.ID}}
 {{range $executor.Nodes}}
@@ -21,13 +22,31 @@ private:
     {{- end}}
     {{- range $i, $from := .Topics_rx}}
     {{- $ch := index $callback.Topics_cx $i}}
+    {{- if eq $from -1}}
+    {{else}}
     rclcpp::Subscription<{{$meta.MsgType}}>::SharedPtr sub_{{$from}}_{{$callback.ID}}_{{$ch}};
+    {{- end}}
     {{- end}}
     {{- range $i, $to := .Topics_tx}}
     {{- $ch := index $callback.Topics_cx $i}}
+    {{- if eq $to -1}}
+    {{- else}}
     rclcpp::Publisher<{{$meta.MsgType}}>::SharedPtr pub_{{$callback.ID}}_{{$to}}_{{$ch}};
     {{- end}}
+    {{- end}}
 {{- end}}
+
+{{- range .Filters}}
+	{{- $filter := .}}
+	{{- range $i, $from := .Topics_rx}}
+	{{- $to := index $filter.Topics_tx $i}}
+	{{- $ch := index $filter.Topics_cx $i}}
+	message_filters::Subscriber<{{$meta.MsgType}}> sub_{{$from}}_{{$filter.ID}}_{{$ch}};
+	rclcpp::Publisher<{{$meta.MsgType}}>::SharedPtr pub_{{$filter.ID}}_{{$to}}_{{$ch}};
+	{{- end}}
+{{- end}}
+
+	// Standard callbacks
 {{- range .Callbacks}}
 	{{- $callback := .}}
 	void C{{.ID}} ({{- if .Timer}}{{else}}{{$meta.MsgType}}::SharedPtr msg_p, std::string topic{{end}})
@@ -38,7 +57,7 @@ private:
 		}
 
 		// Relay
-		{{range $i, $from := .Topics_rx}}
+		{{- range $i, $from := .Topics_rx}}
 		{{- $to := index $callback.Topics_tx $i}}
 		{{- $ch := index $callback.Topics_cx $i}}
 
@@ -63,6 +82,19 @@ private:
 		{{- end}}
 	}
 {{- end}}
+
+	// Message filter callbacks
+{{- range .Filters}}
+	{{- $filter := .}}
+	void C{{.ID}} ({{$meta.MsgType}}::SharedPtr msg_0, {{$meta.MsgType}}::SharedPtr msg_1)
+	{
+		{{- range $i, $to := .Topics_tx}}
+		{{- $ch := index $filter.Topics_cx $i}}
+		pub_{{$filter.ID}}_{{$to}}_{{$ch}}->publish(msg_{{$i}});
+		{{- end}}
+	}
+{{- end}}
+
 public:
 	{{$node_id := .ID}}
 	N{{$node_id}}(): Node("N{{.ID}}", rclcpp::NodeOptions().start_parameter_event_publisher(false))
@@ -86,7 +118,10 @@ public:
 		{{- range $i, $to := .Topics_tx}}
 		{{- $from := index $callback.Topics_rx $i}}
 		{{- $ch := index $callback.Topics_cx $i}}
+		{{- if eq $to -1}}
+		{{- else}}
 		pub_{{$callback.ID}}_{{$to}}_{{$ch}} = this->create_publisher<$meta.MsgType>("T_N{{$callback.ID}}_N{{$to}}_C{{$ch}}", 10);
+		{{- end}}
 		{{- end}}
 		{{- end}}
 
@@ -96,6 +131,8 @@ public:
 		{{- range $i, $to := .Topics_tx}}
 		{{- $from := index $callback.Topics_rx $i}}
 		{{- $ch := index $callback.Topics_cx $i}}
+		{{- if eq $from -1}}
+		{{- else}}
 		{{- if $meta.PPE}}
 		sub_{{$from}}_{{$callback.ID}}_{{$ch}} = this->create_priority_subscription<$meta.MsgType>("T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}", 10,
 			std::bind(&N{{$node_id}}::C{{$callback.ID}}, this, _1), {{$callback.Priority}});
@@ -104,6 +141,14 @@ public:
 			std::bind(&N{{$node_id}}::C{{$callback.ID}}, this, _1));
 		{{- end}}
 		{{- end}}
+		{{- end}}
+		{{- end}}
+
+		// Init message filter publishers and subscriptions
+		{{- range $i, $filter := .Filters}}
+		message_filters::Synchronizer<FilterPolicy> filter_{{$filter.ID}}(
+			FilterPolicy(10){{range $j, $from := $filter.Topics_rx}}{{- $ch := index $filter.Topics_cx $j}},  sub_{{.}}_{{$filter.ID}}_{{$ch}}{{end}});
+		filter_{{$filter.ID}}.registerCallback(&N{{$node_id}}::C{{$filter.ID}}, this);
 		{{- end}}
 	}
 };

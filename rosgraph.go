@@ -93,10 +93,11 @@ type Graphviz_application struct {
 */
 
 type ROS_Executor struct {
-	Includes    []string          // Include directives for C++ program
-	MsgType     string            // Program message type
-	PPE         bool              // Whether to use PPE types and semantics
-	Executor    gen.Executor      // The executor to parse
+	Includes     []string         // Include directives for C++ program
+	MsgType      string           // Program message type
+	FilterPolicy string           // Policy for message filters
+	PPE          bool             // Whether to use PPE types and semantics
+	Executor     gen.Executor     // The executor to parse
 }
 
 /*
@@ -1459,6 +1460,7 @@ func main () {
 		executors = append(executors, ROS_Executor{
 			Includes: []string{"std_msgs/msg/int64.hpp"},
 			MsgType:  "std_msgs::msg::Int64",
+			FilterPolicy: "message_filters::sync_policies::ApproximateTime",
 			PPE:      app.PPE,
 			Executor: exec,
 		})
