@@ -1,13 +1,46 @@
 package gen
 
+// Author: Charles Randolph
+// Function:
+//    Gen (short for "generate") provides:
+//    1. A structure hierarchy more appropriate for representing a ROS app
+//    2. A structure hierarchy that can be easily used with templates
+//    3. Facilities for converting:
+//
+//        a. An edge graph 
+//        b. A list of chain lengths, and their respective paths
+//        c. A list of periods for the chains
+//        d. Maps linking graph nodes to WCET, benchmarks, and priorities
+//       
+//      Into this described hierarchy. It also automatically decides how many
+//      nodes belong in each executor, and randomly assigns callbacks across
+//      executors. 
+//
+//    Info: Callback placement
+//      A callback is always placed in a node that belongs to its chain. This
+//      decision is meant to replicate the concept that chains of callbacks
+//      typically need to share data. So it makes sense that they be grouped
+//      together.
+//
+//    Info: Filter placement
+//      Filters, or sync nodes, are always placed inside the node that they
+//      forward to. This decision is meant to mimic the most likely placement
+//      of such nodes in a real ROS application. Namely, that given you want
+//      to synchronize inputs to a certain callback, that the filter would be
+//      setup in the same node as that of the callback.
+
 
 import (
+
+	// Standard packages
 	"fmt"
 	"math/rand"
 	"errors"
 	"encoding/json"
 	"bytes"
 	"os"
+
+	// Custom packages
 	"graph"
 	"benchmark"
 )
@@ -171,25 +204,6 @@ func (a *Application) From_Graph (
 	}
 	for _, value := range node_filter_map {
 		filters = append(filters, value)
-	}
-
-	// Debug (print)
-	for i, c := range callbacks {
-		timer := "false"
-		if (c.Timer) {
-			timer = "true"
-		}
-		fmt.Printf("%d. ID = %d, Priority = %d, Timer = %s, Period = %f, WCET = %f, Benchmark = %s, Repeats = %d\n",
-			i, c.ID, c.Priority, timer, c.Period, c.WCET, c.Benchmark, c.Repeats)
-		for j := 0; j < len(c.Topics_rx); j++ {
-			fmt.Printf("\t(%d)--[%d]->(%d)\n", c.Topics_rx[j], c.Topics_cx[j], c.Topics_tx[j])
-		}
-	}
-	for i, f := range filters {
-		fmt.Printf("%d. ID = %d\n", i, f.ID)
-		for j := 0; j < len(f.Topics_rx); j++ {
-			fmt.Printf("\t(%d)--[%d]->(%d)\n", f.Topics_rx[j], f.Topics_cx[j], f.Topics_tx[j])
-		} 
 	}
 
 	// Distribute callbacks into executors

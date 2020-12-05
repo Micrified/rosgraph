@@ -1,6 +1,8 @@
 package main
 
 import (
+
+	// Standard packages
 	"os"
 	"fmt"
 	"errors"
@@ -20,6 +22,7 @@ import (
 	"benchmark"
 	"colors"
 	"rosgraph/gen"
+	"rosgraph/ops"
 
 	// Third party packages
 	"github.com/gookit/color"
@@ -42,18 +45,6 @@ type Config struct {
 	Min_period_ns     int
 	Max_period_ns     int
 } 
-
-/*
- *******************************************************************************
- *                           Graph Type Definitions                            *
- *******************************************************************************
-*/
-
-type Edge struct {
-	Tag       int          // Sequence identifier
-	Num       int          // Sequence edge number
-	Color     string       // Color to use with edge
-}
 
 /*
  *******************************************************************************
@@ -138,271 +129,6 @@ func show_config (cfg Config) {
  *                          Graph Operation Functions                          *
  *******************************************************************************
 */
-
-// Returns a string describing an edge. Used with graph.Map
-func show (x interface{}) string {
-	es := x.([]*Edge)
-	if len(es) == 0 {
-		return " _ "
-	}
-	s := fmt.Sprintf("(%d", es[0].Tag)
-	for i := 1; i < len(es); i++ {
-		s += fmt.Sprintf(",%d", es[i].Tag)
-	}
-	return s + ")"
-}
-
-// Extracts a slice of edges from the given index in the graph. Panics on err
-func edgesAt (row, col int, g *graph.Graph) []*Edge {
-	val, err := g.Get(row, col)
-	if nil != err {
-		panic(err)
-	}
-	if nil == val {
-		return []*Edge{}
-	}
-	return val.([]*Edge)
-}
-
-// Returns starting row of all chains, given an ordeMagenta slice of chain lengths
-func get_start_rows (chains []int) []int {
-	starting_rows := []int{}
-	for i, sum := 0, 0; i < len(chains); i++ {
-		starting_rows = append(starting_rows, sum)
-		sum += chains[i]
-	}
-	return starting_rows
-}
-
-// Returns the chain to which the given row belongs to (given all chains)
-func get_row_chain (row int, chains []int) int {
-	i, sum := 0, 0
-	for i = 0; i < len(chains); i++ {
-		if (row >= sum) && (row < (sum + chains[i])) {
-			break
-		} else {
-			sum += chains[i]
-		}
-	}
-	return i
-}
-
-// Returns true if 'from' has an edge to 'to'
-func edge_between (a, b int, g *graph.Graph) bool {
-
-	// Closure: Returns true if x has a directed edge to y
-	has_outgoing_edge := func (x, y int, g *graph.Graph) bool {
-		edges := edgesAt(x,y,g)
-		return (len(edges) > 0)
-	}
-
-	return (has_outgoing_edge(a, b, g) || has_outgoing_edge(b, a, g))
-}
-
-// Returns true if 'row' has no incoming or outgoing edges
-func is_isolated (row int, g *graph.Graph) bool {
-
-	// Check row (outgoing)
-	for i := 0; i < g.Len(); i++ {
-		edges := edgesAt(row, i, g)
-		if (len(edges) > 0) {
-			return false
-		}
-	}
-
-	// Check column (incoming)
-	for i := 0; i < g.Len(); i++ {
-		edges := edgesAt(i, row, g)
-		if (len(edges) > 0) {
-			return false
-		}
-	}
-
-	return true
-}
-
-// Returns (column,*edge) at which a given edge is found for a row. Else -1, nil
-func col_for_edge (tag, num, row int, g *graph.Graph) (int, *Edge) {
-	var edge *Edge = nil
-	var col int    = -1
-
-	for i := 0; i < g.Len(); i++ {
-		edges := edgesAt(row, i, g)
-		if len(edges) == 0 {
-			continue
-		}
-		for _, e := range edges {
-			if e.Tag == tag && e.Num == num {
-				edge = e
-				col = i
-				break
-			}
-		}
-	}
-	return col, edge	
-}
-
-// Returns sequence of nodes (rows) visited by a path (chain)
-func get_path (id int, chains []int, g *graph.Graph) []int {
-	var row, col int = -1, -1
-	var path []int = []int{}
-
-	// Chains may only merge between start nodes. Starting edge is in this row
-	start_rows := get_start_rows(chains)
-
-	// If the chain has only one element - it cannot be merged so return row
-	if chains[id] == 1 {
-		return []int{start_rows[id]}
-	}
-
-	// Locate row on which starting edge resides
-	for i := 0; i < len(start_rows); i++ {
-		if c, _ := col_for_edge(id, 0, start_rows[i], g); c != -1 {
-			row = start_rows[i]
-			col = c
-			break
-		}
-	}
-
-	// If starting edge not found - panic
-	if col == -1 {
-		panic(errors.New(fmt.Sprintf("Unable to find starting edge for chain %d", id)))
-	} else {
-		path = append(path, row)
-	}
-
-	for col != -1 {
-
-		// Next row to visit is that along the column
-		row = col
-
-		// Push this next row to the path
-		path = append(path, row)
-
-		// Find and set next column
-		col, _ = col_for_edge(id, len(path) - 1, row, g)
-	}
-
-	// Assert: Number of nodes (doesn't work if the graph is extended)
-	// if len(path) != chains[id] {
-	// 	panic(errors.New(fmt.Sprintf("Node count inconsistent for chain %d", id)))
-	// }
-
-	return path
-}
-
-// Removes edge with tag and num at row 'from', col 'to', and shifts it to col 'dest'
-func set_edge_destination (from, to, tag, num, dest int, g *graph.Graph) {
-	var edge *Edge = nil
-
-	// The edge is in row 'from', col 'to'. It should be removed from there first
-	edges := edgesAt(from, to, g)
-	for i, e := range edges {
-		if (e.Tag == tag) && (e.Num == num) {
-			edge = e
-			g.Set(from, to, append(edges[:i], edges[i+1:]...))
-			break
-		}
-	}
-
-	// Assert that an edge was found, as it is expected
-	if nil == edge {
-		check(errors.New("Edge not found!"), "Edge expected at (%d,%d) from chain %d\n",
-			from, to, tag)()
-	}
-
-	// Insert the current edge at the destination column
-	edges = edgesAt(from, dest, g)
-	edges = append(edges, edge)
-	err := g.Set(from, dest, edges)
-	check(err, fmt.Sprintf("Couldn't set edges at (%d,%d) in graph!", from, dest))()
-}
-
-// Extends the given NxN graph to an (N+1)x(N+1) graph, returns new length
-func add_node (g *graph.Graph) int {
-	n := g.Len()
-	var expanded_graph graph.Graph = make([][]interface{}, n+1)
-	for i := 0; i < (n+1); i++ {
-		expanded_graph[i] = make([]interface{}, n+1)
-	}
-	for i := 0; i < n; i++ {
-		for j := 0; j < n; j++ {
-			expanded_graph[i][j] = (*g)[i][j]
-		}
-	}
-	(*g) = expanded_graph
-
-	return (n+1)
-}
-
-// Adds an edge to the graph
-func add_edge (from, to, tag, num int, color string, g *graph.Graph) error {
-	e := &Edge{Tag: tag, Num: num, Color: color}
-	edges := edgesAt(from, to, g)
-	edges = append(edges, e)
-	return g.Set(from, to, edges)
-}
-
-/*
- *******************************************************************************
- *                               Graph Functions                               *
- *******************************************************************************
-*/
-
-// Initializes a new graph using given chains. Edges for each chain assigned a color
-func init_graph (chains []int, palette []string) *graph.Graph {
-	rows := 0;
-
-	// RequiMagenta rows is sum of chain lengths
-	for _, n := range chains {
-		rows += n
-	}
-
-	// Initialize the graph
-	var g graph.Graph = make([][]interface{}, rows)
-
-	// Create columns and empty rows (NxN)
-	for i := 0; i < rows; i++ {
-		g[i] = make([]interface{}, rows)
-		for j := 0; j < rows; j++ {
-			g[i][j] = []*Edge{}
-		}
-	}
-
-	// Initialize all chains
-	for i, offset := 0, 0; i < len(chains); i++ {
-		for j := 0; j < (chains[i] - 1); j++ {
-			g.Set(offset+j, offset+j+1, []*Edge{&Edge{Tag: i, Num: j, Color: palette[i]}})
-		}
-		offset += chains[i]
-	}
-
-	return &g
-}
-
-// Merges element on row 'from' into element on row 'to' in graph 'g'
-func merge (from, to int, g *graph.Graph) {
-
-	// All slices in row 'from' should be moved to row 'to'
-	for i := 0; i < g.Len(); i++ {
-		src_edges, dst_edges := edgesAt(from, i, g), edgesAt(to, i, g)
-		if len(src_edges) == 0 {
-			continue
-		}
-		g.Set(to, i, append(src_edges, dst_edges...))
-		g.Set(from, i, nil)
-	}
-
-	// All slices in column 'from' should be moved to column 'to'
-	for i := 0; i < g.Len(); i++ {
-		src_edges, dst_edges := edgesAt(i, from, g), edgesAt(i, to, g)
-		if len(src_edges) == 0 {
-			continue
-		}
-		g.Set(i, to, append(src_edges, dst_edges...))
-		g.Set(i, from, nil)
-	}
-}
 
 // Returns true if a merge is allowed, per the merge rules
 func can_merge (from, to int, chains []int, g *graph.Graph) bool {
