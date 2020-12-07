@@ -55,8 +55,8 @@ type Callback struct {
 	ID          int          // Unique identifier
 	Priority    int          // Priority for use with PPE
 	Timer       bool         // True if a timer callback
-	Period      float64      // Timer period (set if timer)
-	WCET        float64      // WCET (ns) simulated
+	Period      int64        // Timer period (set if timer)
+	WCET        int64        // WCET (ns) simulated
 	Benchmark   string       // Name of benchmark for WCET
 	Repeats     int          // Times to repeat benchmark
 	Topics_rx   []int        // [1] Topic map rx[i] -> tx[i]
@@ -160,8 +160,8 @@ func (a *Application) From_Graph (
 						ID:        node,
 						Priority:  node_prio_map[node],
 						Timer:     (i == 0),
-						Period:    periods[get_row_chain(node, chains)],
-						WCET:      node_wcet_map[node],
+						Period:    int64(periods[get_row_chain(node, chains)]),
+						WCET:      int64(node_wcet_map[node]),
 						Benchmark: benchmark_name,
 						Repeats:   node_work_map[node].Iterations,
 						Topics_rx: []int{},

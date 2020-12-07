@@ -947,7 +947,8 @@ func main () {
 
 	// Assign timing information to graph
 	us := temporal.Uunifast(1.0, len(chains))
-	ts := temporal.Make_Temporal_Data(temporal.Range{Min: 1000, Max: 10000}, us)
+	ts := temporal.Make_Temporal_Data(temporal.Range{Min: float64(input.Min_period_ns), 
+		Max: float64(input.Max_period_ns)}, us)
 	for i := 0; i < len(ts); i++ {
 		fmt.Printf("Chain %d gets (U = %f, T = %f, C = %f)\n", i, us[i], ts[i].T, ts[i].C)
 	}
@@ -978,7 +979,7 @@ func main () {
 		if work_assign.Benchmark == nil {
 			fmt.Printf("Node %d has been assigned nothing, since no benchmark suits it...\n", node)
 		} else {
-			fmt.Printf("Node %d has been assigned {.Benchmark = %s, .Iterations = %d} for %f <= %d WCET\n", 
+			fmt.Printf("Node %d has been assigned {.Benchmark = %s, .Iterations = %d} for %f <= %f WCET\n", 
 				node, work_assign.Benchmark.Name, work_assign.Iterations, float64(work_assign.Iterations) * work_assign.Benchmark.Runtime, node_wcet_map[node])			
 			}
 	}
@@ -1014,7 +1015,7 @@ func main () {
 	check(err, "Unable to create visualization of chains")()
 
 	// Convert the graph into a ROS-like representation
-	app := app.Init_Application("Foo", true, 3)
+	app := app.Init_Application("rand", true, 3)
 	app.From_Graph(chains, paths, periods, node_wcet_map, node_work_map, node_prio_map, g)
 
 	// Create an image visualizing the ROS application structure
@@ -1026,13 +1027,13 @@ func main () {
 
 	// Application generation
 	meta := gen.Metadata {
-		Packages: []string{"std_msgs"},
-		Includes: []string{"std_msgs/msg/int64.hpp"},
+		Packages: []string{"std_msgs", "message_filters"},
+		Includes: []string{"std_msgs/msg/int64.hpp", "message_filters/subscriber.h", "message_filters/sync_policies/approximate_time.h"},
 		MsgType: "std_msgs::msg::Int64",
 		PPE: true,
 		FilterPolicy: "message_filters::sync_policies::ApproximateTime",
 	}
 	err = gen.GenerateApplication(app, path, meta)
-
+	check(err, "Unable to generate application")()
 	info("Nominal")
 }

@@ -53,8 +53,21 @@ private:
 	{
 		// WCET ~{{.WCET}}ns via TACLe benchmarks
 		for (int i = 0; i < {{.Repeats}}; ++i) {
+			{{- if eq .Benchmark ""}}
+			// No suitable benchmark found (!)
+			{{- else }}
 			{{.Benchmark}}();
+			{{- end}}
 		}
+
+		{{- if .Timer}}
+		// Get timestamp
+		auto timestamp_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(
+			std::chrono::steady_clock::now());
+		auto value_ns = timestamp_ns.time_since_epoch();
+		std_msgs::msg::Int64 msg_p;
+		msg_p.data = value_ns.count();
+		{{- end}}
 
 		// Relay
 		{{- range $i, $from := .Topics_rx}}
@@ -75,7 +88,13 @@ private:
 		pub_{{$callback.ID}}_{{$to}}_{{$ch}}->publish(msg_p);
 		{{- else}}
 		if (topic == "T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}") {
+		{{- if .Timer}}
+			pub_{{$callback.ID}}_{{$to}}_{{$ch}}->publish(msg);
+		{{- else}}
 			pub_{{$callback.ID}}_{{$to}}_{{$ch}}->publish(msg_p);
+		{{- end}}
+		}
+		}
 		}
 		{{- end}}
 		{{- end}}
@@ -120,7 +139,7 @@ public:
 		{{- $ch := index $callback.Topics_cx $i}}
 		{{- if eq $to -1}}
 		{{- else}}
-		pub_{{$callback.ID}}_{{$to}}_{{$ch}} = this->create_publisher<$meta.MsgType>("T_N{{$callback.ID}}_N{{$to}}_C{{$ch}}", 10);
+		pub_{{$callback.ID}}_{{$to}}_{{$ch}} = this->create_publisher<{{$meta.MsgType}}>("T_N{{$callback.ID}}_N{{$to}}_C{{$ch}}", 10);
 		{{- end}}
 		{{- end}}
 		{{- end}}
@@ -133,12 +152,13 @@ public:
 		{{- $ch := index $callback.Topics_cx $i}}
 		{{- if eq $from -1}}
 		{{- else}}
+		std::function<void(const {{$meta.MsgType}}::SharedPtr msg_p)> f{{$i}} = std::bind(&N{{$node_id}}::C{{$callback.ID}}, this, std::placeholders::_1, "T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}");
 		{{- if $meta.PPE}}
-		sub_{{$from}}_{{$callback.ID}}_{{$ch}} = this->create_priority_subscription<$meta.MsgType>("T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}", 10,
-			std::bind(&N{{$node_id}}::C{{$callback.ID}}, this, _1), {{$callback.Priority}});
+		sub_{{$from}}_{{$callback.ID}}_{{$ch}} = this->create_priority_subscription<{{$meta.MsgType}}>("T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}", 10,
+			f{{$i}}, {{$callback.Priority}});
 		{{- else}}
-		sub_{{$from}}_{{$callback.ID}}_{{$ch}} = this->create_subscription<$meta.MsgType>("T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}", 10,
-			std::bind(&N{{$node_id}}::C{{$callback.ID}}, this, _1));
+		sub_{{$from}}_{{$callback.ID}}_{{$ch}} = this->create_subscription<{{$meta.MsgType}}>("T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}", 10,
+			f{{$i}});
 		{{- end}}
 		{{- end}}
 		{{- end}}
@@ -160,7 +180,7 @@ int main (int argc, char *argv[])
 
 	// Init nodes
 	{{- range $executor.Nodes}}
-	auto N{{.ID}} = std::make_shared<N{{.ID}}>();
+	auto node_N{{.ID}} = std::make_shared<N{{.ID}}>();
 	{{- end}}
 
 	// Init executor
@@ -172,7 +192,7 @@ int main (int argc, char *argv[])
 
 	// Add nodes
 	{{- range $executor.Nodes}}
-	exec.add_node(N{{.ID}});
+	exec.add_node(node_N{{.ID}});
 	{{- end}}
 
 	// Spin (for hyper-period)
