@@ -1,0 +1,28 @@
+cmake_minimum_required(VERSION 3.5)
+project({{.Name}})
+
+# Set include directories
+include_directories(include)
+# Find dependencies
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+{{- range .Packages}}
+find_package({{.}} REQUIRED)
+{{- end}}
+
+# Add executables and list their dependencies
+{{- range $index, $element := .Executors}}
+add_executable(executor_{{$index}} src/executor_{{$index}}.cpp)
+{{- end}}
+
+{{- $out := .}}
+{{- range $index, $element := .Executors}}
+ament_target_dependencies(executor_{{$index}} ament_cmake rclcpp{{range $out.Packages}} {{.}}{{end}})
+{{- end}}
+
+install(TARGETS
+{{- range $index, $element := .Executors}}
+  executor_{{$index}}
+{{- end}}
+  DESTINATION lib/${PROJECT_NAME})
+ament_package()

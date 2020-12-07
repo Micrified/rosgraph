@@ -1,93 +1,49 @@
 package gen
 
-// Author: Charles Randolph
-// Function:
-//    Gen (short for "generate") provides:
-//    1. A structure hierarchy more appropriate for representing a ROS app
-//    2. A structure hierarchy that can be easily used with templates
-//    3. Facilities for converting:
-//
-//        a. An edge graph 
-//        b. A list of chain lengths, and their respective paths
-//        c. A list of periods for the chains
-//        d. Maps linking graph nodes to WCET, benchmarks, and priorities
-//       
-//      Into this described hierarchy. It also automatically decides how many
-//      nodes belong in each executor, and randomly assigns callbacks across
-//      executors. 
-//
-//    Info: Callback placement
-//      A callback is always placed in a node that belongs to its chain. This
-//      decision is meant to replicate the concept that chains of callbacks
-//      typically need to share data. So it makes sense that they be grouped
-//      together.
-//
-//    Info: Filter placement
-//      Filters, or sync nodes, are always placed inside the node that they
-//      forward to. This decision is meant to mimic the most likely placement
-//      of such nodes in a real ROS application. Namely, that given you want
-//      to synchronize inputs to a certain callback, that the filter would be
-//      setup in the same node as that of the callback.
-
-
 import (
 
 	// Standard packages
 	"fmt"
-	"math/rand"
-	"errors"
-	"encoding/json"
-	"bytes"
 	"os"
+	"os/exec"
+	"io"
+	"bufio"
+	"io/ioutil"
+	"text/template"
+	"errors"
+	"strings"
 
 	// Custom packages
-	"graph"
-	"benchmark"
+	"rosgraph/app"
 )
 
 /*
  *******************************************************************************
- *                              Type Definitions                               *
+ *                          Template Type Definitions                          *
  *******************************************************************************
 */
 
-type Callback struct {
-	ID          int          // Unique identifier
-	Priority    int          // Priority for use with PPE
-	Timer       bool         // True if a timer callback
-	Period      float64      // Timer period (set if timer)
-	WCET        float64      // WCET (ns) simulated
-	Benchmark   string       // Name of benchmark for WCET
-	Repeats     int          // Times to repeat benchmark
-	Topics_rx   []int        // [1] Topic map rx[i] -> tx[i]
-	Topics_tx   []int        // [2] Topic map rx[i] -> tx[i]
-	Topics_cx   []int        // [3] Chain identifier for [1,2]
+type ROS_Executor struct {
+	Includes     []string         // Include directives for C++ program
+	MsgType      string           // Program message type
+	FilterPolicy string           // Policy for message filters
+	PPE          bool             // Whether to use PPE types and semantics
+	Executor     app.Executor     // The executor to parse
 }
 
-type Filter struct {
-	ID          int          // Unique identifier
-	Topics_rx   []int        // [1] Topic map rx[i] -> tx[i]
-	Topics_tx   []int        // [2] Topic map rx[i] -> tx[i]
-	Topics_cx   []int        // [3] Chain identifier for [1,2]
+type Metadata struct {
+	Packages     []string          // Packages to include in makefile
+	Includes     []string          // Include directives for C++ program
+	MsgType      string            // Program message type
+	PPE          bool              // Whether to use PPE types and semantics
+	FilterPolicy string            // Policy for message filters
 }
 
-type Node struct {
-	ID          int          // Unique node identifier
-	Callbacks   []Callback   // Callbacks located in node
-	Filters     []Filter     // Message filters located in node
+type Build struct {
+	Name      string
+	Packages  []string
+	Executors []ROS_Executor
 }
-
-type Executor struct {
-	ID          int          // Unique executor identifier
-	Nodes       []Node       // Nodes located in executor
-}
-
-type Application struct {
-	Name        string       // Application identifer
-	PPE         bool         // Assumes PPE semantics if set true
-	Executors   []Executor   // Executors composing application
-}
-
 
 /*
  *******************************************************************************
@@ -95,269 +51,177 @@ type Application struct {
  *******************************************************************************
 */
 
+// Generates a buffer from a template at 'path', which is fed to the given command as stdin
+func GenerateWithCommand (path, command string, args []string, data interface{}) error {
+	var err error = nil
+	var template_buffer []byte = []byte{}
+	var t *template.Template = nil
 
-func Init_Application (name string, ppe bool, exec_count int) *Application {
-	var app Application = Application{
-		Name: name, 
-		PPE: ppe, 
-		Executors: make([]Executor, exec_count),
+	// Check: command exists
+	_, err = exec.LookPath(command)
+	if nil != err {
+		return errors.New("Cannot find command \"" + command + "\": " + err.Error())
 	}
 
-	// Init empty executors
-	for i := 0; i < exec_count; i++ {
-		app.Executors[i].ID = i
-		app.Executors[i].Nodes = []Node{}
+	// Check: valid data
+	if nil == data {
+		return errors.New("bad input: null pointer")
 	}
 
-	return &app
+	// Read in the template file
+	template_buffer, err = ioutil.ReadFile(path)
+	if nil != err || template_buffer == nil {
+		return errors.New("Unable to read template \"" + path + "\": " + err.Error())
+	}
+
+	// Convert file to template
+	t, err = template.New("Unnamed").Parse(string(template_buffer))
+	if nil != err {
+		return errors.New("Template parse error: " + err.Error())
+	}
+
+	// Build command to run (configure it to read from a pipe)
+	cmd := exec.Command(command, args...)
+	r, w := io.Pipe()
+	cmd.Stdin = r
+
+	// Run the command in a goroutine
+	go func() {
+		cmd.Run()
+		r.Close()
+	}()
+
+	// Execute template into buffered writer
+	err = t.Execute(w, data)
+	defer w.Close()
+	if nil != err {
+		return errors.New("Exception executing template: " + err.Error())
+	}
+
+	return nil
 }
 
-func (a *Application) From_Graph (
-	chains        []int,                  // List of chain lengths
-	paths         [][]int,                // Paths of the chains
-	periods       []float64,              // Period of the chains
-	node_wcet_map map[int]float64,        // Maps a node to a WCET
-	node_work_map map[int]benchmark.Work, // Maps a node to a benchmark
-	node_prio_map map[int]int,            // Maps a node to a priority
-	g             *graph.Graph) error {   // 2D graph with node relations
+// Generates a file given a data structure, path to template, and output filename
+func GenerateTemplate (data interface{}, in_path, out_path string) error {
+	var t *template.Template = nil
+	var err error = nil
+	var out_file *os.File = nil
+	var template_file []byte = []byte{}
+
+	// check: valid input
+	if nil == data {
+		return errors.New("bad argument: null pointer")
+	}
+	// Yes, you can use == with string comparisons in go
+	if in_path == out_path {
+		return errors.New("input file (template) cannot be same as output file")
+	}
+
+	// Create the output file
+	out_file, err = os.Create(out_path)
+	if nil != err {
+		return errors.New("unable to create output file (" + out_path + "): " + err.Error())
+	}
+	defer out_file.Close()
+
+	// Open the template file
+	template_file, err = ioutil.ReadFile(in_path)
+	if nil != err {
+		return errors.New("unable to read input file (" + in_path + "): " + err.Error())
+	}
+	if template_file == nil {
+		panic(errors.New("Nil pointer to read file"))
+	}
+
+	t, err = template.New("Unnamed").Parse(string(template_file))
+	if nil != err {
+		return errors.New("unable to parse the template: " + err.Error())
+	}
+
+	// Create buffered writer
+	writer := bufio.NewWriter(out_file)
+	defer writer.Flush()
+
+	// Execute template
+	err = t.Execute(writer, data)
+	if nil != err {
+		return errors.New("error executing template: " + err.Error())
+	}
+
+	return nil
+}
+
+func GenerateApplication (a *app.Application, path string, meta Metadata) error {
 	var err error = nil
 
-	// Maps nodes to either a callback or filter
-	node_callback_map, node_filter_map := make(map[int]Callback), make(map[int]Filter)
-
-	// Determine the number of callbacks and filters
-	n_callbacks := get_callback_count(chains)
-
-	// Chain represents the id of the path, and path is the slice of visited nodes
-	for chain, path := range paths {
-		for i := 0; i < len(path); i++ {
-			var from, to, node int
-
-			// Setup current node, previous, and next
-			node = path[i]
-			if i == 0 {
-				from = -1
-			} else {
-				from = path[i-1]
-			}
-			if i == (len(path) - 1) {
-				to = -1
-			} else {
-				to = path[i+1]
-			}
-
-			// It's a callback if node < n_callbacks, otherwise it's a filter
-			if node < n_callbacks {
-
-				// If an entry does not exist - create one;
-				entry, exists := node_callback_map[node]
-				if !exists {
-					benchmark_name := ""
-					if node_work_map[node].Benchmark != nil {
-						benchmark_name = node_work_map[node].Benchmark.Name
-					}
-					entry = Callback{
-						ID:        node,
-						Priority:  node_prio_map[node],
-						Timer:     (i == 0),
-						Period:    periods[get_row_chain(node, chains)],
-						WCET:      node_wcet_map[node],
-						Benchmark: benchmark_name,
-						Repeats:   node_work_map[node].Iterations,
-						Topics_rx: []int{},
-						Topics_tx: []int{},
-						Topics_cx: []int{},
-					}
-				}
-
-				// Enter in the relation
-				entry.Topics_rx = append(entry.Topics_rx, from)
-				entry.Topics_tx = append(entry.Topics_tx, to)
-				entry.Topics_cx = append(entry.Topics_cx, chain)
-				node_callback_map[node] = entry
-			} else {
-
-				// If an entry does not exist - create one;
-				entry, exists := node_filter_map[node]
-				if !exists {
-					entry = Filter {
-						ID:        node,
-						Topics_rx: []int{},
-						Topics_tx: []int{},
-						Topics_cx: []int{},
-					}
-				}
-
-				// Enter in the relation
-				entry.Topics_rx = append(entry.Topics_rx, from)
-				entry.Topics_tx = append(entry.Topics_tx, to)
-				entry.Topics_cx = append(entry.Topics_cx, chain)
-				node_filter_map[node] = entry
+	// Closure: Attempts to make all given directories
+	make_directories := func (directories []string) error {
+		for _, dir := range directories {
+			err := os.Mkdir(dir, 0777)
+			if nil != err {
+				return errors.New("Cannot make dir (" + dir + "): " + err.Error())
 			}
 		}
+		return nil
 	}
 
-	// Extract callbacks and filters as the values of the respective maps
-	callbacks, filters := []Callback{}, []Filter{}
-	for _, value := range node_callback_map {
-		callbacks = append(callbacks, value)
-	}
-	for _, value := range node_filter_map {
-		filters = append(filters, value)
+	// Check: input
+	if nil == a {
+		return errors.New("bad argument: null pointer")
 	}
 
-	// Distribute callbacks into executors
-	err = a.distribute_callbacks(chains, callbacks)
-	if nil != err {
-		return err
+	// Strip possible forward-slash from path
+	if len(path) > 1 && strings.HasSuffix(path, "/") {
+		path = path[:len(path)-1]
 	}
-	err = a.distribute_filters(filters)
+
+	// Prepare directories
+	root_dir := path + "/" + a.Name
+	src_dir, include_dir_1 := root_dir + "/src", root_dir + "/include"
+	include_dir_2 := include_dir_1 + "/" + a.Name
+
+	// Create directories
+	ds := []string{root_dir, src_dir, include_dir_1, include_dir_2}
+	err = make_directories(ds)
 	if nil != err {
 		return err
 	}
 
-	// Debug
-	data, _ := json.Marshal(*a)
-	fmt.Printf("\n\n")
-    fmt.Println(string(data))
-
-    var out bytes.Buffer
-	json.Indent(&out, data, "=", "\t")
-	out.WriteTo(os.Stdout)
-
-
-	return nil
-}
-
-
-/*
- *******************************************************************************
- *                        Private Function Definitions                         *
- *******************************************************************************
-*/
-
-
-// Distributes callbacks into an application (Strategy: Group by chain)
-func (a *Application) distribute_callbacks (chains []int, callbacks []Callback) error {
-	executor_callback_pool := make([][]Callback, len(a.Executors))
-
-	// Verify that there are at least as many callbacks as executors
-	// Why? Because we group filters with callbacks
-	if len(callbacks) < len(a.Executors) {
-		reason := fmt.Sprintf("More executors than callbacks (%d callbacks, %d executors)",
-			len(callbacks), len(a.Executors))
-		return errors.New(reason)
-	}
-
-	// Randomly shuffle the callbacks
-	rand.Shuffle(len(callbacks), func(i, j int){ callbacks[i], callbacks[j] = callbacks[j], callbacks[i] })
-
-	// Allocate callbacks to the executors
-	for i := 0; i < len(callbacks); i++ {
-		e := i % len(a.Executors)
-		executor_callback_pool[e] = append(executor_callback_pool[e], callbacks[i])
-	}
-
-	// Determine the number of nodes needed per executor. The number of different
-	// chains in the callbacks is used to determine this
-	for i, callback_pool := range executor_callback_pool {
-		node_chain_map := make(map[int]Node)
-
-		// For each callback alloted to this executor
-		for _, callback := range callback_pool {
-
-			// Get the chain ID for the callback
-			chain_id := get_row_chain(callback.ID, chains)
-
-			// Check if there is a node present for the chain of the callback
-			node, exists := node_chain_map[chain_id]
-
-			// If not, then create one 
-			if !exists {
-				node = Node{ID: len(node_chain_map), Callbacks: []Callback{}, Filters: []Filter{}}
-			}
-
-			// Add the callback to the node
-			node.Callbacks = append(node.Callbacks, callback)
-
-			// Save it
-			node_chain_map[chain_id] = node
+	// Generate source files
+	executors := []ROS_Executor{}
+	for i, exec := range a.Executors {
+		ros_exec_name := fmt.Sprintf("executor_%d.cpp", i)
+		ros_exec := ROS_Executor{
+			Includes:     meta.Includes,
+			MsgType:      meta.MsgType,
+			FilterPolicy: meta.FilterPolicy,
+			PPE:          meta.PPE,
+			Executor:     exec,
 		}
-
-		// Collect all nodes
-		nodes, j := make([]Node, len(node_chain_map)), 0
-		for _, node := range node_chain_map {
-			nodes[j] = node
-			j++
-		}
-
-		// Update the executor
-		a.Executors[i].Nodes = nodes
-	}
-
-	return nil
-}
-
-// Distributes filters into an application (Strategy: Group with dest callback)
-// Assumes: Nodes created, and callbacks already distributed
-func (a *Application) distribute_filters (filters []Filter) error {
-
-	// Closure: Return a pair (index, index) of an executor and node containing the given callback
-	get_indices := func (callback_id int) (int, int) {
-		for i, e := range a.Executors {
-			for j, n := range e.Nodes {
-				for _, c := range n.Callbacks {
-					if c.ID == callback_id {
-						return i, j
-					}
-				}
-			}
-		}
-		return -1, -1
-	}
-
-	for _, f := range filters {
-
-		// Check that the destination node exists for the filter
-		if len(f.Topics_tx) == 0 {
-			reason := fmt.Sprintf("Filter %d has no destination node!", f.ID)
-			return errors.New(reason)
-		}
-
-		// Locate the index of the executor, and inner node, that hold that destination
-		id_e, id_n := get_indices(f.Topics_tx[0])
-
-		// Return an error it none was found, otherwise insert it
-		if id_e == -1 {
-			reason := fmt.Sprintf("Cannot place filter %d, destination callback not found!",
-				f.ID)
-			return errors.New(reason)
-		} else {
-			a.Executors[id_e].Nodes[id_n].Filters = append(a.Executors[id_e].Nodes[id_n].Filters, f)
+		executors = append(executors, ros_exec)
+		err = GenerateTemplate(ros_exec, path + "/templates/executor.tmpl", 
+			src_dir + "/" + ros_exec_name)
+		if nil != err {
+			return errors.New("Unable to generate source file: " + err.Error())
 		}
 	}
 
-	return nil
-}
-
-// Given a slice of chain lengths, it returns the number of callbacks
-func get_callback_count (chains []int) int {
-	n := 0
-	for _, c := range chains {
-		n += c
+	// Update the metadata
+	build := Build{
+		Name: a.Name,
+		Packages: meta.Packages,
+		Executors: executors,
 	}
-	return n
-}
 
-// Returns the chain to which the given row belongs to 
-func get_row_chain (row int, chains []int) int {
-	i, sum := 0, 0
-	for i = 0; i < len(chains); i++ {
-		if (row >= sum) && (row < (sum + chains[i])) {
-			break
-		} else {
-			sum += chains[i]
-		}
+	// Generate makefile
+	err = GenerateTemplate(build, "templates/CMakeLists.tmpl", root_dir + "/CMakeLists.txt")
+	if nil != err {
+		return errors.New("Unable to generate CMakeLists: " + err.Error())
 	}
-	return i
+
+	// Generate package descriptor file
+	err = GenerateTemplate(build, "templates/package.tmpl", root_dir + "/package.xml")
+
+
+	return err
 }

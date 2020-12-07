@@ -42,6 +42,35 @@ func (e *Edge) Equals (other *Edge) bool {
 	return (e.Tag == other.Tag) && (e.Num == other.Num)
 }
 
+// Returns the larger of two integer numbers (silly but no default)
+func Max (a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// Returns the number of nodes in a slice of chains
+func NodeCount (chains []int) int {
+	sum := 0
+	for _, c := range chains {
+		sum += c
+	}
+	return sum
+}
+
+// Returns a string describing a path
+func Path2String (path []int) string {
+	s := "{"
+	for i, n := range path {
+		s += fmt.Sprintf("%d", n)
+		if i < (len(path)-1) {
+			s += ","
+		}
+	}
+	return s + "}"
+}
+
 // Returns a string describing an edge. To be used with graph.Map
 func Show (x interface{}) string {
 	es := x.([]*Edge)
@@ -283,12 +312,9 @@ func Merge (from, to int, g *graph.Graph) error {
 
 // Returns a new graph sized for given chains. With chain edge colors
 func InitGraph (chains []int, chain_colors []string) *graph.Graph {
-	n := 0
 
 	// Compute number of rows required
-	for _, ns := range chains {
-		n += ns
-	}
+	n := NodeCount(chains)
 
 	// Initialize graph
 	var g graph.Graph = make([][]interface{}, n)
