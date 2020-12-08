@@ -1015,7 +1015,7 @@ func main () {
 	check(err, "Unable to create visualization of chains")()
 
 	// Convert the graph into a ROS-like representation
-	app := app.Init_Application("rand", true, 3)
+	app := app.Init_Application("foo", true, 3)
 	app.From_Graph(chains, paths, periods, node_wcet_map, node_work_map, node_prio_map, g)
 
 	// Create an image visualizing the ROS application structure
@@ -1028,10 +1028,13 @@ func main () {
 	// Application generation
 	meta := gen.Metadata {
 		Packages: []string{"std_msgs", "message_filters"},
-		Includes: []string{"std_msgs/msg/int64.hpp", "message_filters/subscriber.h", "message_filters/sync_policies/approximate_time.h"},
+		Includes: []string{"std_msgs/msg/int64.hpp", "message_filters/subscriber.h", "message_filters/sync_policies/approximate_time.h",
+							app.Name + "/" + "tacle_benchmarks.h"},
 		MsgType: "std_msgs::msg::Int64",
 		PPE: true,
 		FilterPolicy: "message_filters::sync_policies::ApproximateTime",
+		Libraries: []string{path + "/lib/libtacle.a"},
+		Headers:   []string{path + "/lib/tacle_benchmarks.h"},
 	}
 	err = gen.GenerateApplication(app, path, meta)
 	check(err, "Unable to generate application")()

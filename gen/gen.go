@@ -37,12 +37,17 @@ type Metadata struct {
 	MsgType      string            // Program message type
 	PPE          bool              // Whether to use PPE types and semantics
 	FilterPolicy string            // Policy for message filters
+	Libraries    []string          // Path to static libraries to link/copy in
+	Headers      []string          // Paths to headers files to copy in
+	Sources      []string          // Paths to source files to copy in
 }
 
 type Build struct {
-	Name      string
-	Packages  []string
-	Executors []ROS_Executor
+	Name         string            // Name given to XML package
+	Packages     []string          // Packages to include
+	Sources      []string          // Source files to compile with executables
+	Libraries    []string          // Libraries to link with executables
+	Executors    []ROS_Executor    // ROS executable structures
 }
 
 /*
@@ -179,9 +184,10 @@ func GenerateApplication (a *app.Application, path string, meta Metadata) error 
 	root_dir := path + "/" + a.Name
 	src_dir, include_dir_1 := root_dir + "/src", root_dir + "/include"
 	include_dir_2 := include_dir_1 + "/" + a.Name
+	lib_dir := root_dir + "/lib"
 
 	// Create directories
-	ds := []string{root_dir, src_dir, include_dir_1, include_dir_2}
+	ds := []string{root_dir, src_dir, include_dir_1, include_dir_2, lib_dir}
 	err = make_directories(ds)
 	if nil != err {
 		return err
@@ -207,9 +213,16 @@ func GenerateApplication (a *app.Application, path string, meta Metadata) error 
 	}
 
 	// Update the metadata
+	sources, err := filenames_from_paths(meta.Sources)
+	if nil != err {
+		return err
+	}
+	libraries, err := filenames_from_paths(meta.Libraries)
 	build := Build{
-		Name: a.Name,
+		Name:     a.Name,
 		Packages: meta.Packages,
+		Sources:  sources,
+		Libraries: libraries,
 		Executors: executors,
 	}
 
@@ -222,6 +235,100 @@ func GenerateApplication (a *app.Application, path string, meta Metadata) error 
 	// Generate package descriptor file
 	err = GenerateTemplate(build, "templates/package.tmpl", root_dir + "/package.xml")
 
+	// Copy in libraries, headers, and source files
+	err = copy_files_to(meta.Libraries, lib_dir)
+	if nil != err {
+		return err
+	}
+	err = copy_files_to(meta.Headers, include_dir_2)
+	if nil != err {
+		return err
+	}
+	err = copy_files_to(meta.Sources, src_dir)
 
 	return err
+}
+
+
+/*
+ *******************************************************************************
+ *                        Private Function Definitions                         *
+ *******************************************************************************
+*/
+
+// Copies a file 
+func copy_file (from, to string) error {
+	file_from, err := os.Open(from)
+	if nil != err {
+		return err
+	}
+	defer file_from.Close()
+
+	file_to, err := os.OpenFile(to, os.O_RDWR | os.O_CREATE, 0777)
+	if nil != err {
+		return err
+	}
+	defer file_to.Close()
+
+	_, err = io.Copy(file_to, file_from)
+	if nil != err {
+		return err
+	}
+	return nil
+}
+
+// Copy files (full path) to a destination folder
+func copy_files_to (paths []string, destination string) error {
+
+	// Check if destination exists
+	if !exists_file_or_directory(destination) {
+		return errors.New("Unable to locate: " + destination)
+	}
+
+	// Move all files to the given directory
+	for _, path := range paths {
+
+		// Check if path exists
+		if !exists_file_or_directory(path) {
+			return errors.New("Unable to locate: " + path)
+		}
+
+		// Strip down to the filename
+		filename, err := filename_from_path(path)
+		if nil != err {
+			return err
+		}
+
+		// Copy over
+		err = copy_file(path, destination + "/" + filename)
+		if nil != err {
+			return err
+		}
+	}
+	return nil
+}
+
+func exists_file_or_directory (path string) bool {
+	_, err := os.Stat(path)
+	return !os.IsNotExist(err)
+}
+
+func filename_from_path (path string) (string, error) {
+	path_elements := strings.Split(path, "/")
+	if len(path_elements) == 0 {
+		return "", errors.New("Both separator and path are empty!")
+	}
+	return path_elements[len(path_elements) - 1], nil
+}
+
+func filenames_from_paths (paths []string) ([]string, error) {
+	filenames := []string{}
+	for _, path := range paths {
+		filename, err := filename_from_path(path)
+		if nil != err {
+			return []string{}, err
+		}
+		filenames = append(filenames, filename)
+	}
+	return filenames, nil
 }
