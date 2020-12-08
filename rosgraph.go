@@ -1036,4 +1036,10 @@ func main () {
 	err = gen.GenerateApplication(app, path, meta)
 	check(err, "Unable to generate application")()
 	info("Nominal")
+
+	// Todo:
+	// 1. Convert benchmarks to CPP files
+	// 2. Build one big archive (if possible)
+	// 3. Include that when building projects
+	
 }
