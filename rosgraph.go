@@ -1015,7 +1015,7 @@ func main () {
 	check(err, "Unable to create visualization of chains")()
 
 	// Convert the graph into a ROS-like representation
-	app := app.Init_Application("foo", true, 3)
+	app := app.Init_Application("alpha", true, 3)
 	app.From_Graph(chains, paths, periods, node_wcet_map, node_work_map, node_prio_map, g)
 
 	// Create an image visualizing the ROS application structure
@@ -1041,8 +1041,9 @@ func main () {
 	info("Nominal")
 
 	// Todo:
-	// 1. Convert benchmarks to CPP files
-	// 2. Build one big archive (if possible)
-	// 3. Include that when building projects
+	// 1. Make sure two versions of each application are generated (vanilla, ppe)
+	// 2. Make sure this is working for sync
+	// 3. Generate a launch file too
+	// 4. Finalize some kind of logging
 	
 }

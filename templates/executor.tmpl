@@ -88,11 +88,7 @@ private:
 		pub_{{$callback.ID}}_{{$to}}_{{$ch}}->publish(msg_p);
 		{{- else}}
 		if (topic == "T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}") {
-		{{- if .Timer}}
-			pub_{{$callback.ID}}_{{$to}}_{{$ch}}->publish(msg);
-		{{- else}}
-			pub_{{$callback.ID}}_{{$to}}_{{$ch}}->publish(msg_p);
-		{{- end}}
+			pub_{{$callback.ID}}_{{$to}}_{{$ch}}->publish(*msg_p);
 		}
 		}
 		}
@@ -109,7 +105,7 @@ private:
 	{
 		{{- range $i, $to := .Topics_tx}}
 		{{- $ch := index $filter.Topics_cx $i}}
-		pub_{{$filter.ID}}_{{$to}}_{{$ch}}->publish(msg_{{$i}});
+		pub_{{$filter.ID}}_{{$to}}_{{$ch}}->publish(*msg_{{$i}});
 		{{- end}}
 	}
 {{- end}}
