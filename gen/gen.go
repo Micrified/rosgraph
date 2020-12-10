@@ -184,10 +184,10 @@ func GenerateApplication (a *app.Application, path string, meta Metadata) error 
 	root_dir := path + "/" + a.Name
 	src_dir, include_dir_1 := root_dir + "/src", root_dir + "/include"
 	include_dir_2 := include_dir_1 + "/" + a.Name
-	lib_dir := root_dir + "/lib"
+	lib_dir, launch_dir := root_dir + "/lib", root_dir + "/launch"
 
 	// Create directories
-	ds := []string{root_dir, src_dir, include_dir_1, include_dir_2, lib_dir}
+	ds := []string{root_dir, src_dir, include_dir_1, include_dir_2, lib_dir, launch_dir}
 	err = make_directories(ds)
 	if nil != err {
 		return err
@@ -218,10 +218,13 @@ func GenerateApplication (a *app.Application, path string, meta Metadata) error 
 		return err
 	}
 	libraries, err := filenames_from_paths(meta.Libraries)
+	if nil != err {
+		return err
+	}
 	build := Build{
-		Name:     a.Name,
-		Packages: meta.Packages,
-		Sources:  sources,
+		Name:      a.Name,
+		Packages:  meta.Packages,
+		Sources:   sources,
 		Libraries: libraries,
 		Executors: executors,
 	}
@@ -245,6 +248,9 @@ func GenerateApplication (a *app.Application, path string, meta Metadata) error 
 		return err
 	}
 	err = copy_files_to(meta.Sources, src_dir)
+
+	// Generate the launch file
+	err = GenerateTemplate(build, "templates/launch.tmpl", launch_dir + "/" + build.Name + "_launch.py")
 
 	return err
 }

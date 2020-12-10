@@ -1029,12 +1029,13 @@ func main () {
 	meta := gen.Metadata {
 		Packages: []string{"std_msgs", "message_filters"},
 		Includes: []string{"std_msgs/msg/int64.hpp", "message_filters/subscriber.h", "message_filters/sync_policies/approximate_time.h",
-							app.Name + "/" + "tacle_benchmarks.h"},
+							app.Name + "/" + "tacle_benchmarks.h", app.Name + "/" + "roslog.h"},
 		MsgType: "std_msgs::msg::Int64",
 		PPE: true,
 		FilterPolicy: "message_filters::sync_policies::ApproximateTime",
 		Libraries: []string{path + "/lib/libtacle.a"},
-		Headers:   []string{path + "/lib/tacle_benchmarks.h"},
+		Headers:   []string{path + "/lib/tacle_benchmarks.h", path + "/include/roslog.h"},
+		Sources:   []string{path + "/src/roslog.cpp"},
 	}
 	err = gen.GenerateApplication(app, path, meta)
 	check(err, "Unable to generate application")()
@@ -1045,5 +1046,4 @@ func main () {
 	// 2. Make sure this is working for sync
 	// 3. Generate a launch file too
 	// 4. Finalize some kind of logging
-	
 }

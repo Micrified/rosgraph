@@ -13,7 +13,7 @@ find_package({{.}} REQUIRED)
 # Add executables and list their dependencies
 {{- $build := .}}
 {{- range $index, $element := .Executors}}
-add_executable(executor_{{$index}} src/executor_{{$index}}.cpp{{range $build.Sources}} {{.}}{{end}})
+add_executable(executor_{{$index}} src/executor_{{$index}}.cpp{{range $build.Sources}} src/{{.}}{{end}})
 {{- range $build.Libraries}}
 target_link_libraries(executor_{{$index}} ${CMAKE_SOURCE_DIR}/lib/{{.}})
 {{- end}}

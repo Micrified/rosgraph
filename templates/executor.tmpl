@@ -51,6 +51,17 @@ private:
 	{{- $callback := .}}
 	void C{{.ID}} ({{- if .Timer}}{{else}}{{$meta.MsgType}}::SharedPtr msg_p, std::string topic{{end}})
 	{
+		// Log start of callback
+		{{- if .Timer}}
+		{{- range $i, $to := .Topics_tx}}
+		{{- $ch := index $callback.Topics_cx $i}}
+		roslog_log({{$ch}}, {{$callback.ID}}, true);
+		{{- end}}
+		{{- else}}
+		int chain_id = roslog_chain_from_topic(topic);
+		roslog_log(chain_id, {{.ID}}, true);
+		{{- end}}
+
 		// WCET ~{{.WCET}}ns via TACLe benchmarks
 		for (int i = 0; i < {{.Repeats}}; ++i) {
 			{{- if eq .Benchmark ""}}
@@ -77,9 +88,14 @@ private:
 		{{- if eq $to -1}}
 		{{- if eq $from -1}}
 		// TODO: Publish timing information (one off timer)
+			{{- range $i, $to := $callback.Topics_tx}}
+			{{- $ch := index $callback.Topics_cx $i}}
+			roslog_log({{$ch}}, {{$callback.ID}}, false);
+			{{- end}}
 		{{- else}}
 		if (topic == "T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}") {
 			// TODO: Publish timing information
+			roslog_log(chain_id, {{$callback.ID}}, false);
 			return;
 		}
 		{{- end}}
@@ -94,6 +110,16 @@ private:
 		}
 		{{- end}}
 		{{- end}}
+		{{- end}}
+
+		// Log end of callback
+		{{- if .Timer}}
+		{{- range $i, $to := .Topics_tx}}
+		{{- $ch := index $callback.Topics_cx $i}}
+		roslog_log({{$ch}}, {{$callback.ID}}, false);
+		{{- end}}
+		{{- else}}
+		roslog_log(chain_id, {{.ID}}, false);
 		{{- end}}
 	}
 {{- end}}
@@ -191,9 +217,15 @@ int main (int argc, char *argv[])
 	exec.add_node(node_N{{.ID}});
 	{{- end}}
 
+	// Init logging
+	roslog_init();
+
 	// Spin (for hyper-period)
 	// TODO: implement some kind of spin functionality with a timeout, and a callback
 	exec.spin();
+
+	// Stop logging
+	roslog_close();
 
 	// Stop
 	rclcpp::shutdown();
