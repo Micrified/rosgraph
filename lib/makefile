@@ -1,6 +1,6 @@
 all: libtacle.a
 
-libtacle.a: statemate.o petrinet.o ndes.o mpeg2.o huff_enc.o huff_dec.o g723_enc.o epic.o dijkstra.o adpcm_dec.o adpcm_enc.o
+libtacle.a: statemate.o petrinet.o ndes.o mpeg2.o huff_enc.o g723_enc.o epic.o dijkstra.o adpcm_dec.o adpcm_enc.o
 	ar -cvq $@ $^
 
 adpcm_dec.o: tacle_benchmarks.h src/adpcm_dec/adpcm_dec.cpp
@@ -9,16 +9,13 @@ adpcm_dec.o: tacle_benchmarks.h src/adpcm_dec/adpcm_dec.cpp
 adpcm_enc.o: tacle_benchmarks.h src/adpcm_enc/adpcm_enc.cpp
 	g++ -c $^
 
-dijkstra.o: tacle_benchmarks.h src/dijkstra/dijkstra.cpp src/dijkstra/input.cpp src/dijkstra/input.h
+dijkstra.o: tacle_benchmarks.h src/dijkstra/dijkstra.cpp
 	g++ -c $^
 
 epic.o: tacle_benchmarks.h src/epic/epic.h src/epic/epic.cpp
 	g++ -c $^
 
 g723_enc.o: tacle_benchmarks.h src/g723_enc/g723_enc.cpp
-	g++ -c $^
-
-huff_dec.o: tacle_benchmarks.h src/huff_dec/huff_dec.cpp
 	g++ -c $^
 
 huff_enc.o: tacle_benchmarks.h src/huff_enc/huff_enc.cpp

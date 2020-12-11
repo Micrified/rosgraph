@@ -11,8 +11,6 @@ int epic (void);
 
 int g723_enc (void);
 
-int huff_dec (void);
-
 int huff_enc (void);
 
 int mpeg2 (void);
