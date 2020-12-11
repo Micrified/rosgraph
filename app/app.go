@@ -55,8 +55,8 @@ type Callback struct {
 	ID          int          // Unique identifier
 	Priority    int          // Priority for use with PPE
 	Timer       bool         // True if a timer callback
-	Period      int64        // Timer period (set if timer)
-	WCET        int64        // WCET (ns) simulated
+	Period      int64        // Timer period (set if timer) in us
+	WCET        int64        // WCET (us) simulated
 	Benchmark   string       // Name of benchmark for WCET
 	Repeats     int          // Times to repeat benchmark
 	Topics_rx   []int        // [1] Topic map rx[i] -> tx[i]

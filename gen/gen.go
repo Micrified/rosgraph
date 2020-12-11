@@ -29,6 +29,7 @@ type ROS_Executor struct {
 	FilterPolicy string           // Policy for message filters
 	PPE          bool             // Whether to use PPE types and semantics
 	Executor     app.Executor     // The executor to parse
+	Duration_us  int64            // Duration (in us) to run the executor
 }
 
 type Metadata struct {
@@ -40,6 +41,7 @@ type Metadata struct {
 	Libraries    []string          // Path to static libraries to link/copy in
 	Headers      []string          // Paths to headers files to copy in
 	Sources      []string          // Paths to source files to copy in
+	Duration_us  int64             // Duration (in us) to run the executor
 }
 
 type Build struct {
@@ -203,6 +205,7 @@ func GenerateApplication (a *app.Application, path string, meta Metadata) error 
 			FilterPolicy: meta.FilterPolicy,
 			PPE:          meta.PPE,
 			Executor:     exec,
+			Duration_us:  meta.Duration_us,
 		}
 		executors = append(executors, ros_exec)
 		err = GenerateTemplate(ros_exec, path + "/templates/executor.tmpl", 

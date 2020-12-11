@@ -17,10 +17,10 @@ void roslog_init ()
 
 long roslog_get_timestamp ()
 {
-	auto timestamp_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(
+	auto timestamp_us = std::chrono::time_point_cast<std::chrono::microseconds>(
 		std::chrono::steady_clock::now());
-	auto value_ns = timestamp_ns.time_since_epoch();
-	return value_ns.count();	
+	auto value_us = timestamp_us.time_since_epoch();
+	return value_us.count();	
 }
 
 int roslog_chain_from_topic (std::string topic)

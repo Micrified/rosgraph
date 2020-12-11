@@ -65,11 +65,8 @@ private:
 
 		{{- if .Timer}}
 		// Get timestamp
-		auto timestamp_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(
-			std::chrono::steady_clock::now());
-		auto value_ns = timestamp_ns.time_since_epoch();
 		std_msgs::msg::Int64 msg_p;
-		msg_p.data = value_ns.count();
+		msg_p.data = roslog_get_timestamp();
 		{{- end}}
 
 		// Relay
@@ -141,10 +138,10 @@ public:
 		{{- range .Callbacks}}
 		{{- if .Timer}}
 		{{- if $meta.PPE}}
-		timer_{{.ID}} = this->create_wall_timer(std::chrono::nanoseconds({{.Period}}),
+		timer_{{.ID}} = this->create_wall_timer(std::chrono::microseconds({{.Period}}),
 			std::bind(&N{{$node_id}}::C{{.ID}}, this), nullptr, {{.Priority}});
 		{{- else}}
-		timer_{{.ID}} = this->create_wall_timer(std::chrono::nanoseconds({{.Period}}),
+		timer_{{.ID}} = this->create_wall_timer(std::chrono::microseconds({{.Period}}),
 			std::bind(&N{{$node_id}}::C{{.ID}}, this), nullptr);
 		{{- end}}
 		{{- end}}
@@ -206,7 +203,8 @@ int main (int argc, char *argv[])
 	{{- if $meta.PPE}}
 	rclcpp::executors::PreemptivePriorityExecutor exec(rclcpp::ExecutorOptions(), {50,99}, rclcpp::executors::P_FP);
 	{{- else}}
-	rclcpp::executors::MultiThreadedExecutor exec(rclcpp::ExecutorOptions(), 2);
+	// rclcpp::executors::MultiThreadedExecutor exec(rclcpp::ExecutorOptions(), 2);
+	rclcpp::executors::SingleThreadedExecutor exec;
 	{{- end}}
 
 	// Add nodes
@@ -217,9 +215,9 @@ int main (int argc, char *argv[])
 	// Init logging
 	roslog_init();
 
-	// Spin (for hyper-period)
-	// TODO: implement some kind of spin functionality with a timeout, and a callback
-	exec.spin();
+	// Spin for some duration
+	exec.spin_some(std::chrono::duration_cast<std::chrono::nanoseconds>(
+		std::chrono::microseconds({{$meta.Duration_us}})));
 
 	// Stop logging
 	roslog_close();

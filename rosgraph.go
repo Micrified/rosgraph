@@ -39,9 +39,10 @@ type Config struct {
 	Chain_sync_p       float64
 	Chain_variance     float64
 	Util_total         float64
-	Min_period_ns      int
-	Max_period_ns      int
+	Min_period_us      int
+	Max_period_us      int
 	Period_granularity float64
+	Hyperperiod_count  int
 } 
 
 /*
@@ -102,15 +103,15 @@ func info (s string, args ...interface{}) {
 }
 
 func show_config (cfg Config) {
-	color.Black.Printf("Path:           "); color.Magenta.Printf("%s\n", cfg.Path)
-	color.Black.Printf("Chain_count:    "); color.Magenta.Printf("%d\n", cfg.Chain_count)
-	color.Black.Printf("Chain_avg_len:  "); color.Magenta.Printf("%d\n", cfg.Chain_avg_len)
-	color.Black.Printf("Chain_merge_p:  "); color.Magenta.Printf("%.2f\n", cfg.Chain_merge_p)
-	color.Black.Printf("Chain_sync_p:   "); color.Magenta.Printf("%.2f\n", cfg.Chain_sync_p)
-	color.Black.Printf("Chain_variance: "); color.Magenta.Printf("%.2f\n", cfg.Chain_variance)
-	color.Black.Printf("Util_total:     "); color.Magenta.Printf("%.2f\n", cfg.Util_total)
-	color.Black.Printf("Min_period_ns:  "); color.Magenta.Printf("%d\n", cfg.Min_period_ns)
-	color.Black.Printf("Max_period_ns:  "); color.Magenta.Printf("%d\n", cfg.Max_period_ns)
+	color.Blue.Printf("Path:           "); color.Green.Printf("%s\n", cfg.Path)
+	color.Blue.Printf("Chain_count:    "); color.Green.Printf("%d\n", cfg.Chain_count)
+	color.Blue.Printf("Chain_avg_len:  "); color.Green.Printf("%d\n", cfg.Chain_avg_len)
+	color.Blue.Printf("Chain_merge_p:  "); color.Green.Printf("%.2f\n", cfg.Chain_merge_p)
+	color.Blue.Printf("Chain_sync_p:   "); color.Green.Printf("%.2f\n", cfg.Chain_sync_p)
+	color.Blue.Printf("Chain_variance: "); color.Green.Printf("%.2f\n", cfg.Chain_variance)
+	color.Blue.Printf("Util_total:     "); color.Green.Printf("%.2f\n", cfg.Util_total)
+	color.Blue.Printf("Min_period_us:  "); color.Green.Printf("%d\n", cfg.Min_period_us)
+	color.Blue.Printf("Max_period_us:  "); color.Green.Printf("%d\n", cfg.Max_period_us)
 }
 
 /*
@@ -671,12 +672,12 @@ func map_benchmarks_to_nodes (node_wcet_map map[int]float64,
 		for _, benchmark := range benchmarks {
 
 			// Ignore unset entries
-			if benchmark.Runtime == 0.0 {
+			if benchmark.Runtime_us == 0.0 {
 				continue
 			}
 
 			// Ignore candidate benchmarks whose time is > than WCET
-			if benchmark.Runtime > wcet {
+			if benchmark.Runtime_us > wcet {
 				continue
 			}
 
@@ -687,7 +688,7 @@ func map_benchmarks_to_nodes (node_wcet_map map[int]float64,
 			}
 
 			// Otherwise compare the difference in remainder, and pick the better one
-			if is_better_divisor(wcet, benchmark.Runtime, best_fit_benchmark.Runtime) {
+			if is_better_divisor(wcet, benchmark.Runtime_us, best_fit_benchmark.Runtime_us) {
 				best_fit_benchmark = benchmark
 			}
 		}
@@ -700,7 +701,7 @@ func map_benchmarks_to_nodes (node_wcet_map map[int]float64,
 		}
 
 		// Enter into map
-		iterations := int(math.Floor(wcet / best_fit_benchmark.Runtime))
+		iterations := int(math.Floor(wcet / best_fit_benchmark.Runtime_us))
 		node_work_map[node] = benchmark.Work{Benchmark: best_fit_benchmark, Iterations: iterations}
 	}
 
@@ -717,7 +718,6 @@ func map_benchmarks_to_nodes (node_wcet_map map[int]float64,
 func synthesize_node_priorities (chains, priorities []int, g *graph.Graph) map[int]int {
 	node_prio_map := make(map[int]int)
 	paths         := make([][]int, len(chains))
-
 
 	// Obtain the number of nodes that belong to chains
 	n_chain_nodes := ops.NodeCount(chains)
@@ -910,7 +910,7 @@ func main () {
 
 	// Print benchmarks
 	for _, b := range benchmarks {
-		fmt.Printf("%16s\t\t\t%.2f ns\t\t\t%.2f%%\t\t\t", b.Name, b.Runtime, b.Uncertainty)
+		fmt.Printf("%16s\t\t\t%.2f us\t\t\t%.2f%%\t\t\t", b.Name, b.Runtime_us, b.Uncertainty)
 		if b.Evaluated {
 			color.Black.Printf("Ready\n")
 		} else {
@@ -948,14 +948,17 @@ func main () {
 
 	// Assign timing information to graph
 	us := temporal.Uunifast(1.0, len(chains))
-	ts, err := temporal.Make_Temporal_Data(temporal.Range{Min: float64(input.Min_period_ns), 
-		Max: float64(input.Max_period_ns)},input.Period_granularity , us)
-	info("Chains have a period in range [%d,%d]ns, with a step of %fns", input.Min_period_ns,
-		input.Max_period_ns, input.Period_granularity)
+	ts, err := temporal.Make_Temporal_Data(temporal.Range{Min: float64(input.Min_period_us), 
+		Max: float64(input.Max_period_us)},input.Period_granularity, us)
+	info("Chains have a period in range [%d,%d]us, with a step of %fus", input.Min_period_us,
+		input.Max_period_us, input.Period_granularity)
 	check(err, "Unable to generate timing data")()
 	for i := 0; i < len(ts); i++ {
 		fmt.Printf("Chain %d gets (U = %f, T = %f, C = %f)\n", i, us[i], ts[i].T, ts[i].C)
 	}
+	hyperperiod, err := temporal.Integral_Hyperperiod(ts)
+	check(err, "Unable to determine hyperperiod")()
+	info("Hyperperiod: %dus", hyperperiod)
 
 	// TODO: Some chains may begin with the same timer, meaning their period is
 	// not independent and thus their computation time needs to be fixed to match
@@ -984,7 +987,8 @@ func main () {
 			fmt.Printf("Node %d has been assigned nothing, since no benchmark suits it...\n", node)
 		} else {
 			fmt.Printf("Node %d has been assigned {.Benchmark = %s, .Iterations = %d} for %f <= %f WCET\n", 
-				node, work_assign.Benchmark.Name, work_assign.Iterations, float64(work_assign.Iterations) * work_assign.Benchmark.Runtime, node_wcet_map[node])			
+				node, work_assign.Benchmark.Name, work_assign.Iterations, 
+				float64(work_assign.Iterations) * work_assign.Benchmark.Runtime_us, node_wcet_map[node])			
 			}
 	}
 
@@ -1040,6 +1044,7 @@ func main () {
 		Libraries: []string{path + "/lib/libtacle.a"},
 		Headers:   []string{path + "/lib/tacle_benchmarks.h", path + "/include/roslog.h"},
 		Sources:   []string{path + "/src/roslog.cpp"},
+		Duration_us: int64(input.Hyperperiod_count) * hyperperiod,
 	}
 	err = gen.GenerateApplication(app, path, meta)
 	check(err, "Unable to generate application")()
@@ -1055,4 +1060,8 @@ func main () {
 	// 2. Make sure this is working for sync
 	// 3. Generate a launch file too
 	// 4. Finalize some kind of logging
+
+	// Todo: 
+	// Convert timing to microseconds due to overflows
+	// when computing hyperperiod for large values
 }
