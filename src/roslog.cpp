@@ -15,6 +15,14 @@ void roslog_init ()
 	openlog(EXEC_NAME, LOG_CONS, LOG_USER);
 }
 
+long roslog_get_timestamp ()
+{
+	auto timestamp_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(
+		std::chrono::steady_clock::now());
+	auto value_ns = timestamp_ns.time_since_epoch();
+	return value_ns.count();	
+}
+
 int roslog_chain_from_topic (std::string topic)
 {
 	std::string::size_type i;
@@ -41,13 +49,10 @@ int roslog_chain_from_topic (std::string topic)
 	return chain_id;
 }
 
-void roslog_log (int chain, int callback, bool start)
+void roslog_log (int executor, int chain, int callback, long start, long duration)
 {
-	auto timestamp_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(
-		std::chrono::steady_clock::now());
-	auto value_ns = timestamp_ns.time_since_epoch();
-	syslog(LOG_INFO, "{chain: %d, callback: %d, timestamp: %ld, start: %d}",
-		chain, callback, value_ns.count(), start);
+	syslog(LOG_INFO, "{executor: %d, chain: %d, callback: %d, start: %ld, duration: %ld}",
+		executor, chain, callback, start, duration);
 }
 
 void roslog_close ()

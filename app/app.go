@@ -36,9 +36,9 @@ import (
 	"fmt"
 	"math/rand"
 	"errors"
-	"encoding/json"
-	"bytes"
-	"os"
+	// "encoding/json"
+	// "bytes"
+	// "os"
 
 	// Custom packages
 	"graph"
@@ -216,14 +216,14 @@ func (a *Application) From_Graph (
 		return err
 	}
 
-	// Debug
-	data, _ := json.Marshal(*a)
-	fmt.Printf("\n\n")
-    fmt.Println(string(data))
+	// // Debug
+	// data, _ := json.Marshal(*a)
+	// fmt.Printf("\n\n")
+ //    fmt.Println(string(data))
 
-    var out bytes.Buffer
-	json.Indent(&out, data, "=", "\t")
-	out.WriteTo(os.Stdout)
+ //    var out bytes.Buffer
+	// json.Indent(&out, data, "=", "\t")
+	// out.WriteTo(os.Stdout)
 
 
 	return nil
