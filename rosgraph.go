@@ -32,15 +32,16 @@ import (
 */
 
 type Config struct {
-	Path              string
-	Chain_count       int
-	Chain_avg_len     int
-	Chain_merge_p     float64
-	Chain_sync_p      float64
-	Chain_variance    float64
-	Util_total        float64
-	Min_period_ns     int
-	Max_period_ns     int
+	Path               string
+	Chain_count        int
+	Chain_avg_len      int
+	Chain_merge_p      float64
+	Chain_sync_p       float64
+	Chain_variance     float64
+	Util_total         float64
+	Min_period_ns      int
+	Max_period_ns      int
+	Period_granularity float64
 } 
 
 /*
@@ -947,8 +948,11 @@ func main () {
 
 	// Assign timing information to graph
 	us := temporal.Uunifast(1.0, len(chains))
-	ts := temporal.Make_Temporal_Data(temporal.Range{Min: float64(input.Min_period_ns), 
-		Max: float64(input.Max_period_ns)}, us)
+	ts, err := temporal.Make_Temporal_Data(temporal.Range{Min: float64(input.Min_period_ns), 
+		Max: float64(input.Max_period_ns)},input.Period_granularity , us)
+	info("Chains have a period in range [%d,%d]ns, with a step of %fns", input.Min_period_ns,
+		input.Max_period_ns, input.Period_granularity)
+	check(err, "Unable to generate timing data")()
 	for i := 0; i < len(ts); i++ {
 		fmt.Printf("Chain %d gets (U = %f, T = %f, C = %f)\n", i, us[i], ts[i].T, ts[i].C)
 	}
