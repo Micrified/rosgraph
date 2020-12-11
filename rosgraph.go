@@ -1045,6 +1045,11 @@ func main () {
 	check(err, "Unable to generate application")()
 	info("Nominal")
 
+	// Warn that utilisation does not apply if synchronization enabled
+	if input.Chain_sync_p > 0.0 {
+		warn("Nonzero chance of sync nodes, means that utilisation does not apply as expected!")
+	}
+
 	// Todo:
 	// 1. Make sure two versions of each application are generated (vanilla, ppe)
 	// 2. Make sure this is working for sync
