@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"runtime"
 	"encoding/json"
+	"io/ioutil"
 
 	// Custom packages
 	"temporal"
@@ -890,12 +891,16 @@ func main () {
 	var input Config
 	var data []byte
 
-	// Expect input as a JSON argument
+	// Expect input as a JSON file
 	if len(os.Args) != 2 {
-		reason := fmt.Sprintf("%s expects exactly 1 argument, not %d", os.Args[0], len(os.Args) - 1)
-		check(errors.New(reason), "Please provide input as JSON encoded argument")()
-	} else {
-		data = []byte(os.Args[1])
+		fmt.Printf("%s <config.json>\n", os.Args[0])
+		return
+	}
+
+	// Attempt to open file
+	if data, err = ioutil.ReadFile(os.Args[1]); nil != err {
+		check(err, fmt.Sprintf("Unable to open %s", os.Args[1]))()
+		return
 	}
 
 	// Attempt to decode argument
