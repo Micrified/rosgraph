@@ -166,13 +166,13 @@ public:
 		{{- $ch := index $callback.Topics_cx $i}}
 		{{- if eq $from -1}}
 		{{- else}}
-		std::function<void(const {{$meta.MsgType}}::SharedPtr msg_p)> f{{$i}} = std::bind(&N{{$node_id}}::C{{$callback.ID}}, this, std::placeholders::_1, "T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}");
+		std::function<void(const {{$meta.MsgType}}::SharedPtr msg_p)> f{{$callback.ID}}_{{$i}} = std::bind(&N{{$node_id}}::C{{$callback.ID}}, this, std::placeholders::_1, "T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}");
 		{{- if $meta.PPE}}
 		sub_{{$from}}_{{$callback.ID}}_{{$ch}} = this->create_priority_subscription<{{$meta.MsgType}}>("T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}", 10,
-			f{{$i}}, {{$callback.Priority}});
+			f{{$callback.ID}}_{{$i}}, {{$callback.Priority}});
 		{{- else}}
 		sub_{{$from}}_{{$callback.ID}}_{{$ch}} = this->create_subscription<{{$meta.MsgType}}>("T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}", 10,
-			f{{$i}});
+			f{{$callback.ID}}_{{$i}});
 		{{- end}}
 		{{- end}}
 		{{- end}}

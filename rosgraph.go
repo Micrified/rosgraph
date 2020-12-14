@@ -1105,4 +1105,7 @@ func main () {
 	// You can compare the effect of chain length without interfering effects
 	// of shared callbacks or sync nodes first. Those will be testing your synthesis 
 	// policy
+
+	// TODO:
+	// Sort logs in chronological order, so that you don't screw up the log interpreter
 }
