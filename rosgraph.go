@@ -17,6 +17,7 @@ import (
 	"set"
 	"benchmark"
 	"colors"
+	"analysis"
 	"rosgraph/app"
 	"rosgraph/ops"
 	"rosgraph/gen"
@@ -580,7 +581,7 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 	// 3. In the end, we resolve the WCET by picking the minimum
 	for i, path := range paths {
 		wcet := ts[i].C / float64(len(path))
-		fmt.Printf("The WCET for path %d is %f\n", i, wcet)
+		fmt.Printf("The WCET for each callback along path %d is (%f / %d) = %f\n", i, ts[i].C, len(path), wcet)
 		for _, node := range path {
 			value, ok := node_map[node]
 			if !ok {
@@ -1005,9 +1006,12 @@ func main () {
 	}
 
 	// Synthesize prioritites for the graph
+	// TODO: Make this something that can be changed via input
+	// Right now, only chain zero is prioritized
 	priorities := make([]int, input.Chain_count)
-	for i := 0; i < input.Chain_count; i++ {
-		priorities[i] = i
+	priorities[0] = 2;
+	for i := 1; i < input.Chain_count; i++ {
+		priorities[i] = 1
 		fmt.Printf("Chain %d has priority %d\n", i, i)
 	}
 	node_prio_map := synthesize_node_priorities(chains, priorities, g)
@@ -1038,13 +1042,13 @@ func main () {
 		Packages: []string{"std_msgs", "message_filters"},
 		Includes: []string{"std_msgs/msg/int64.hpp", "message_filters/subscriber.h", "message_filters/sync_policies/approximate_time.h",
 							app.Name + "/" + "tacle_benchmarks.h", app.Name + "/" + "roslog.h"},
-		MsgType: "std_msgs::msg::Int64",
-		PPE: app.PPE,
-		FilterPolicy: "message_filters::sync_policies::ApproximateTime",
-		Libraries: []string{path + "/lib/libtacle.a"},
-		Headers:   []string{path + "/lib/tacle_benchmarks.h", path + "/include/roslog.h"},
-		Sources:   []string{path + "/src/roslog.cpp"},
-		Duration_us: int64(input.Hyperperiod_count) * hyperperiod,
+		MsgType:        "std_msgs::msg::Int64",
+		PPE:            app.PPE,
+		FilterPolicy:   "message_filters::sync_policies::ApproximateTime",
+		Libraries:      []string{path + "/lib/libtacle.a"},
+		Headers:        []string{path + "/lib/tacle_benchmarks.h", path + "/include/roslog.h"},
+		Sources:        []string{path + "/src/roslog.cpp"},
+		Duration_us:    int64(input.Hyperperiod_count) * hyperperiod,
 	}
 	err = gen.GenerateApplication(app, path, meta)
 	check(err, "Unable to generate application")()
@@ -1055,6 +1059,14 @@ func main () {
 		warn("Nonzero chance of sync nodes, means that utilisation does not apply as expected!")
 	}
 
+	// Write the chains file, which is used for analysis
+	periods_int := []int{}
+	for _, p := range periods {
+		periods_int = append(periods_int, int(p))
+	}
+	err = analysis.WriteChains(path + "/chains.json", chains, periods_int, priorities, paths, us)
+	check(err, "Unable to generate chains analysis file")()
+
 	// Todo:
 	// 1. Make sure two versions of each application are generated (vanilla, ppe)
 	// 2. Make sure this is working for sync
@@ -1064,4 +1076,31 @@ func main () {
 	// Todo: 
 	// Convert timing to microseconds due to overflows
 	// when computing hyperperiod for large values
+
+	// Assign priorities using rate-monotonic
+	// (this means your sufficient test is via the hyperbolic bound, which says)
+	// The sum of all utilizations, each with 1 added, is less than or equal to 2 (see internet)
+	// The rate-monotonnic priority assignment is optimal, meaning that if any static priority
+	// scheduling algorithm can meet all deadlines, then rate monotonic can too. 
+	// Simple rate-monotonic analysis assumes
+	// 1. No resource sharing
+	// 2. deadlines = periods
+	// 3. static priorities (preemption)
+	// 4. static priorities are assigned according to rate monotonic convetntions
+	// 5. no impact of context switch times
+	//
+	// Right now, all I do is make sure system passes necessary condition. But it still
+	// might not be schedulable. 
+
+	// TODO: Place the generates image files WITH the code in a separate folder
+	// Also include the chains file
+
+	// TODO: Consider assignment to cores
+	// E.G: Given a number of cores, distribute them to run on each core independently.
+	// Maybe not as good as letting them run as is, but controllable
+
+	// TODO:
+	// You can compare the effect of chain length without interfereing effects
+	// of shared callbacks or sync nodes first. Those will be testing your synthesis 
+	// policy
 }

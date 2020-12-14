@@ -1,0 +1,17 @@
+from launch import LaunchDescription
+from launch_ros.actions import Node
+
+def generate_launch_description():
+	return LaunchDescription([
+		{{- $build := .}}
+		{{- range $i, $executor := .Executors}}
+		{{- if $i}},{{- end}}
+		Node(
+			package='{{$build.Name}}',
+			executable='executor_{{$i}}',
+			name='executor_{{$i}}',
+			output='screen',
+			emulate_tty=True
+		)
+		{{- end}}
+	])
