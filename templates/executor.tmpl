@@ -97,8 +97,6 @@ private:
 		if (topic == "T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}") {
 			pub_{{$callback.ID}}_{{$to}}_{{$ch}}->publish(*msg_p);
 		}
-		}
-		}
 		{{- end}}
 		{{- end}}
 		{{- end}}

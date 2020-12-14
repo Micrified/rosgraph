@@ -44,6 +44,8 @@ type Config struct {
 	Max_period_us      int
 	Period_granularity float64
 	Hyperperiod_count  int
+	PPE                bool
+	Executor_count     int
 } 
 
 /*
@@ -1027,7 +1029,7 @@ func main () {
 	check(err, "Unable to create visualization of chains")()
 
 	// Convert the graph into a ROS-like representation
-	app := app.Init_Application("beta", false, 3)
+	app := app.Init_Application("beta", input.PPE, input.Executor_count)
 	app.From_Graph(chains, paths, periods, node_wcet_map, node_work_map, node_prio_map, g)
 
 	// Create an image visualizing the ROS application structure
@@ -1100,7 +1102,7 @@ func main () {
 	// Maybe not as good as letting them run as is, but controllable
 
 	// TODO:
-	// You can compare the effect of chain length without interfereing effects
+	// You can compare the effect of chain length without interfering effects
 	// of shared callbacks or sync nodes first. Those will be testing your synthesis 
 	// policy
 }
