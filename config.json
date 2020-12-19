@@ -1,0 +1,15 @@
+{
+ "Path":"/home/micrified/Go/src/rosgraph",
+ "Chain_count":4, 
+ "Chain_avg_len":10,
+ "Chain_merge_p":0.0,
+ "Chain_sync_p":0.0,
+ "Chain_variance":0.0,
+ "Util_total":10.0,
+ "Min_period_us":100000,
+ "Max_period_us":500000,
+ "Period_granularity": 50000.0,
+ "Hyperperiod_count": 2,
+ "PPE":true,
+ "Executor_count":3
+} 
