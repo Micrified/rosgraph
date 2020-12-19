@@ -199,7 +199,7 @@ int main (int argc, char *argv[])
 
 	// Init executor
 	{{- if $meta.PPE}}
-	rclcpp::executors::PreemptivePriorityExecutor exec(rclcpp::ExecutorOptions(), {50,99}, rclcpp::executors::P_FP);
+	rclcpp::executors::PreemptivePriorityExecutor exec(rclcpp::ExecutorOptions(), {97,99});
 	{{- else}}
 	// rclcpp::executors::MultiThreadedExecutor exec(rclcpp::ExecutorOptions(), 2);
 	rclcpp::executors::SingleThreadedExecutor exec;

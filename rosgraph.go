@@ -1016,9 +1016,9 @@ func main () {
 	// TODO: Make this something that can be changed via input
 	// Right now, only chain zero is prioritized
 	priorities := make([]int, input.Chain_count)
-	priorities[0] = 2;
+	priorities[0] = 1;
 	for i := 1; i < input.Chain_count; i++ {
-		priorities[i] = 1
+		priorities[i] = 0
 		fmt.Printf("Chain %d has priority %d\n", i, i)
 	}
 	node_prio_map := synthesize_node_priorities(chains, priorities, g)
