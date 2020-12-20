@@ -47,6 +47,7 @@ type Config struct {
 	Hyperperiod_count  int
 	PPE                bool
 	Executor_count     int
+	Random_seed        int
 } 
 
 /*
@@ -907,6 +908,10 @@ func main () {
 	err = json.Unmarshal(data, &input)
 	check(err, "Unable to unmarshal the input argument!")()
 	show_config(input)
+
+	// Apply random seed
+	fmt.Printf("Seed = %d\n", input.Random_seed)
+	rand.Seed(int64(input.Random_seed))
 
 	// Extract path
 	path := input.Path

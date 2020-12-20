@@ -6,10 +6,11 @@
  "Chain_sync_p":0.0,
  "Chain_variance":0.0,
  "Util_total":10.0,
- "Min_period_us":100000,
- "Max_period_us":500000,
+ "Min_period_us":1000,
+ "Max_period_us":1000000,
  "Period_granularity": 50000.0,
- "Hyperperiod_count": 2,
+ "Hyperperiod_count": 10,
  "PPE":true,
- "Executor_count":3
+ "Executor_count":3,
+ "Random_seed": 1
 } 
