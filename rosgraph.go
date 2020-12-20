@@ -43,7 +43,7 @@ type Config struct {
 	Util_total         float64
 	Min_period_us      int
 	Max_period_us      int
-	Period_granularity float64
+	Period_step        float64
 	Hyperperiod_count  int
 	PPE                bool
 	Executor_count     int
@@ -962,9 +962,9 @@ func main () {
 	// Assign timing information to graph
 	us := temporal.Uunifast(1.0, len(chains))
 	ts, err := temporal.Make_Temporal_Data(temporal.Range{Min: float64(input.Min_period_us), 
-		Max: float64(input.Max_period_us)},input.Period_granularity, us)
+		Max: float64(input.Max_period_us)},input.Period_step, us)
 	info("Chains have a period in range [%d,%d]us, with a step of %fus", input.Min_period_us,
-		input.Max_period_us, input.Period_granularity)
+		input.Max_period_us, input.Period_step)
 	check(err, "Unable to generate timing data")()
 	for i := 0; i < len(ts); i++ {
 		fmt.Printf("Chain %d gets (U = %f, T = %f, C = %f)\n", i, us[i], ts[i].T, ts[i].C)

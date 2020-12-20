@@ -8,7 +8,7 @@
  "Util_total":10.0,
  "Min_period_us":1000,
  "Max_period_us":1000000,
- "Period_granularity": 50000.0,
+ "Period_step": 50000.0,
  "Hyperperiod_count": 10,
  "PPE":true,
  "Executor_count":3,
