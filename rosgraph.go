@@ -19,9 +19,9 @@ import (
 	"benchmark"
 	"colors"
 	"analysis"
-	"rosgraph/app"
-	"rosgraph/ops"
-	"rosgraph/gen"
+	"ops"
+	"app"
+	"gen"
 
 	// Third party packages
 	"github.com/gookit/color"
@@ -48,39 +48,7 @@ type Config struct {
 	PPE                bool
 	Executor_count     int
 	Random_seed        int
-} 
-
-/*
- *******************************************************************************
- *                          Graphviz Type Definitions                          *
- *******************************************************************************
-*/
-
-type Link struct {
-	From      int                 // Source node
-	To        int                 // Destination node
-	Color     string              // Link color
-	Label     string              // Link label
 }
-
-type Node struct {
-	Id        int                 // Node ID
-	Label     string              // Label for the node
-	Style     string              // Border style
-	Fill      string              // Color indicating fill of the node
-	Shape     string              // Shape of the node
-}
-
-type Graphviz_graph struct {
-	Nodes     []Node              // Nested clusters
-	Links     []Link              // Slice of links
-}
-
-type Graphviz_application struct {
-	App       *app.Application    // Application structure
-	Links     []Link              // Slice of links
-}
-
 
 /*
  *******************************************************************************
@@ -255,72 +223,7 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
 	return true
 }
 
-/*
- *******************************************************************************
- *                             Graphviz Functions                              *
- *******************************************************************************
-*/
 
-// Converts internal graph representation to graphviz application data structure
-func application_to_graphviz (a *app.Application, g *graph.Graph) (Graphviz_application, error) {
-	links := []Link{}
-
-	// Create all links
-	for i := 0; i < g.Len(); i++ {
-		for j := 0; j < g.Len(); j++ {
-			edges := ops.EdgesAt(i, j, g)
-			for _, e := range edges {
-				label := fmt.Sprintf("%d.%d", e.Tag, e.Num)
-				links = append(links, Link{From: i, To: j, Color: e.Color, Label: label})
-			}
-		}
-	}
-
-	return Graphviz_application{App: a, Links: links}, nil
-}
-
-// Converts internal graph representation to graphviz data structure
-func graph_to_graphviz (chains []int, node_wcet_map map[int]float64, node_prio_map map[int]int, g *graph.Graph) (Graphviz_graph, error) {
-	nodes := []Node{}
-	links := []Link{}
-
-	// Closure: Returns true if the given chain has a length of one
-	length_one_chain := func (row int, chains []int) bool {
-		return chains[ops.ChainForRow(row, chains)] == 1
-	}
-
-	// Obtain the number of nodes that belong to chains
-	n_chain_nodes := ops.NodeCount(chains)
-
-	// Create all nodes (but only if connected or chain has length 1)
-	for i := 0; i < g.Len(); i++ {
-		if !ops.Disconnected(i, g) || length_one_chain(i, chains) {
-
-			// It's a chain node if below the original graph node count
-			if i < n_chain_nodes {
-				label := fmt.Sprintf("N%d\n(wcet=%.2f)\nprio=%d", i, node_wcet_map[i], node_prio_map[i])
-				nodes = append(nodes, Node{Id: i, Label: label, Style: "filled", Fill: "#FFFFFF", Shape: "circle"})				
-			} else {
-				label := fmt.Sprintf("N%d\n(SYNC)", i)
-				nodes = append(nodes, Node{Id: i, Label: label, Style: "filled", Fill: "#FFE74C", Shape: "diamond"})
-			}
-		
-		}
-	}
-
-	// Create all links
-	for i := 0; i < g.Len(); i++ {
-		for j := 0; j < g.Len(); j++ {
-			edges := ops.EdgesAt(i, j, g)
-			for _, e := range edges {
-				label := fmt.Sprintf("%d.%d", e.Tag, e.Num)
-				links = append(links, Link{From: i, To: j, Color: e.Color, Label: label})
-			}
-		}
-	}
-
-	return Graphviz_graph{Nodes: nodes, Links: links}, nil
-}
 
 /*
  *******************************************************************************
@@ -1031,25 +934,11 @@ func main () {
 		fmt.Printf("Node %d has prio %d\n", key, value)
 	}
 
-	// Create an image visualizing the chains in the graph
-	graphviz_graph, err := graph_to_graphviz(chains, node_wcet_map, node_prio_map, g)
-	check(err, "Unable to convert graph to graphviz ready data structure")()
-	err = gen.GenerateWithCommand(path + "/templates/graph.dt", "dot",
-		[]string{"-Tpng", "-o", path + "/graph.png"}, graphviz_graph)
-	check(err, "Unable to create visualization of chains")()
-
 	// Convert the graph into a ROS-like representation
 	app := app.Init_Application("beta", input.PPE, input.Executor_count)
 	app.From_Graph(chains, paths, periods, node_wcet_map, node_work_map, node_prio_map, g)
 
-	// Create an image visualizing the ROS application structure
-	graphviz_app, err := application_to_graphviz(app, g)
-	check(err, "Unable to create application graphviz!")()
-	err = gen.GenerateWithCommand(path + "/templates/application.dt", "dot",
-		[]string{"-Tpng", "-o", path + "/application.png"}, graphviz_app)
-	check(err, "Unable to create visualization of application")()
-
-	// Application generation
+	// Metadata for application generation
 	meta := gen.Metadata {
 		Packages: []string{"std_msgs", "message_filters"},
 		Includes: []string{"std_msgs/msg/int64.hpp", "message_filters/subscriber.h", "message_filters/sync_policies/approximate_time.h",
@@ -1062,7 +951,17 @@ func main () {
 		Sources:        []string{path + "/src/roslog.cpp"},
 		Duration_us:    int64(input.Hyperperiod_count) * hyperperiod,
 	}
-	err = gen.GenerateApplication(app, path, meta)
+
+	// Graphdata for application generation
+	graph_data := gen.Graphdata {
+		Chains:        chains,
+		Node_wcet_map: node_wcet_map,
+		Node_prio_map: node_prio_map,
+		Graph:         g,
+	}
+
+	// Generate the application
+	err = gen.GenerateApplication(app, path, meta, graph_data)
 	check(err, "Unable to generate application")()
 	info("Nominal")
 
