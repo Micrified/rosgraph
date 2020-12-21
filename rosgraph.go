@@ -975,7 +975,8 @@ func main () {
 	for _, p := range periods {
 		periods_int = append(periods_int, int(p))
 	}
-	err = analysis.WriteChains(path + "/chains.json", chains, periods_int, priorities, paths, us)
+	err = analysis.WriteChains(path + "/chains.json", input.Random_seed, input.PPE, chains, 
+		periods_int, priorities, paths, us)
 	check(err, "Unable to generate chains analysis file")()
 
 	// Todo:
@@ -1017,4 +1018,8 @@ func main () {
 
 	// TODO:
 	// Sort logs in chronological order, so that you don't screw up the log interpreter
+
+	// TODO: 
+	// Ensure the priority range given to the PPE is determined by the number of 
+	// differing priorities desired 
 }
