@@ -5,6 +5,7 @@ import (
 	// Standard packages
 	"os"
 	"fmt"
+	"strings"
 	"errors"
 	"math"
 	"math/rand"
@@ -27,14 +28,36 @@ import (
 	"github.com/gookit/color"
 )
 
+// Program usage 
+const g_usage string = `
+---------------------------------- Options ------------------------------------
+    --rules-file=<filename>  : Create a random ROS program within the given
+                               constraints. Then generate the program. The 
+                               rules file should be JSON encoded. 
+    --config-file=<filename> : Generate a ROS program exactly as specified. The
+                               config file should be JSON encoded.
+    --timing-data=<data>     : When randomly generating a program, assign 
+                               computation time and period to chains according 
+                               to the given timing data. This crudely maps 
+                               computation time, period to nodes (callbacks). 
+                               Only available with --rules-file
+    --verbose=(true|false)   : Defaults to false. When set to true, various 
+                               debugging messages are printed 
+--------------------------------------------------------------------------------
+`
+
+// Verbosity
+var g_verbose bool = true
+
 /*
  *******************************************************************************
  *                        Input/Output Type Definitions                        *
  *******************************************************************************
 */
 
-type Config struct {
-	Path               string
+// Rules for generation of random ROS programs
+type Rules struct {
+	Directory          string
 	Chain_count        int
 	Chain_avg_len      int
 	Chain_merge_p      float64
@@ -50,16 +73,56 @@ type Config struct {
 	Random_seed        int
 }
 
+// Vector mapping a node index to a WCET, and period value (period for origin)
+type Timing struct {
+	Node_wcet_us       []int
+	Node_period_us     []int
+}
+
+// Encapsulates an argument, expected as "--<keyword>=<Value>"
+type Argument struct {
+	Keyword             string
+	Value               *string
+	Action              func(string) error
+}
+
+// Encapsulates all data needed for generat
+type System struct {
+	Directory     string                  // Working directory
+	Chains        []int                   // Chain (lengths)
+	Colors        []string                // Chain colors
+	Graph         *graph.Graph            // Edge-matrix for nodes
+	Benchmarks    []*benchmark.Benchmark  // Available benchmarks
+	Utilisations  []float64               // Chain utilisations (desired)
+	Timing        []temporal.Temporal     // Chain period + WCET
+	Hyperperiod   int64                   // LCM of periods (convenience)
+	Periods       []float64               // Chain periods (convenience)
+	Node_wcet_map map[int]float64         // Callback comp map
+	Node_work_map map[int]benchmark.Work  // Callback benchmark map
+	Paths         [][]int                 // Chain paths
+	Priorities    []int                   // Chain priorities
+	Node_prio_map map[int]int             // Per-callback priority
+}
+
+
 /*
  *******************************************************************************
  *                           Format Output Functions                           *
  *******************************************************************************
 */
 
+	// Closure: Prints only if verbose is set
+func put (s string, args... interface{}) {
+	if g_verbose {
+		fmt.Printf(s, args...)
+	}
+}
+
 func check (err error, s string, args ...interface{}) func() {
 	if nil != err {
 		return func () {
-			color.Error.Printf("Fault: %s\nCause: %s\n", fmt.Sprintf(s, args...), err.Error())
+			color.Error.Printf("Fault: %s\nCause: %s\n", 
+				fmt.Sprintf(s, args...), err.Error())
 			panic(err.Error())
 		}
 	} else {
@@ -72,19 +135,35 @@ func warn (s string, args ...interface{}) {
 }
 
 func info (s string, args ...interface{}) {
-	color.Style{color.FgGreen, color.OpBold}.Printf("%s\n", fmt.Sprintf(s, args...))
+	if g_verbose {
+		color.Style{color.FgGreen, color.OpBold}.Printf("%s\n", 
+			fmt.Sprintf(s, args...))		
+	}
 }
 
-func show_config (cfg Config) {
-	color.Blue.Printf("Path:           "); color.Green.Printf("%s\n", cfg.Path)
-	color.Blue.Printf("Chain_count:    "); color.Green.Printf("%d\n", cfg.Chain_count)
-	color.Blue.Printf("Chain_avg_len:  "); color.Green.Printf("%d\n", cfg.Chain_avg_len)
-	color.Blue.Printf("Chain_merge_p:  "); color.Green.Printf("%.2f\n", cfg.Chain_merge_p)
-	color.Blue.Printf("Chain_sync_p:   "); color.Green.Printf("%.2f\n", cfg.Chain_sync_p)
-	color.Blue.Printf("Chain_variance: "); color.Green.Printf("%.2f\n", cfg.Chain_variance)
-	color.Blue.Printf("Util_total:     "); color.Green.Printf("%.2f\n", cfg.Util_total)
-	color.Blue.Printf("Min_period_us:  "); color.Green.Printf("%d\n", cfg.Min_period_us)
-	color.Blue.Printf("Max_period_us:  "); color.Green.Printf("%d\n", cfg.Max_period_us)
+func put_kv (k, v string) {
+	if g_verbose {
+		color.Style{color.FgGreen, color.OpBold}.Printf("%s", k)
+		fmt.Printf("=")
+		color.Style{color.FgYellow, color.OpBold}.Printf("%s\n", v)
+	}
+}
+
+func show_rules (rules Rules) {
+	color.Blue.Printf("Directory:         "); color.Green.Printf("%s\n", rules.Directory)
+	color.Blue.Printf("Chain_count:       "); color.Green.Printf("%d\n", rules.Chain_count)
+	color.Blue.Printf("Chain_avg_len:     "); color.Green.Printf("%d\n", rules.Chain_avg_len)
+	color.Blue.Printf("Chain_merge_p:     "); color.Green.Printf("%.2f\n", rules.Chain_merge_p)
+	color.Blue.Printf("Chain_sync_p:      "); color.Green.Printf("%.2f\n", rules.Chain_sync_p)
+	color.Blue.Printf("Chain_variance:    "); color.Green.Printf("%.2f\n", rules.Chain_variance)
+	color.Blue.Printf("Util_total:        "); color.Green.Printf("%.2f\n", rules.Util_total)
+	color.Blue.Printf("Min_period_us:     "); color.Green.Printf("%d\n", rules.Min_period_us)
+	color.Blue.Printf("Max_period_us:     "); color.Green.Printf("%d\n", rules.Max_period_us)
+	color.Blue.Printf("Period_step:       "); color.Green.Printf("%.2f\n", rules.Period_step)
+	color.Blue.Printf("Hyperperiod_count: "); color.Green.Printf("%d\n", rules.Hyperperiod_count)
+	color.Blue.Printf("PPE:               "); color.Green.Printf("%v\n", rules.PPE)
+	color.Blue.Printf("Executor_count:    "); color.Green.Printf("%d\n", rules.Executor_count)
+	color.Blue.Printf("Random_seed:       "); color.Green.Printf("%d\n", rules.Random_seed)
 }
 
 /*
@@ -239,7 +318,7 @@ type ExtendedEdge struct {
 }
 
 // Creates an extended version of the supplied graph by adding synchronization points
-func add_synchronization_nodes (chain_sync_p float64, chains []int, g *graph.Graph) *graph.Graph {
+func add_synchronisation_nodes (chain_sync_p float64, chains []int, g *graph.Graph) {
 	map_chain_to_path := make(map[int]([]int))
 	node_edge_map     := make(map[int]([]ExtendedEdge))
 
@@ -377,8 +456,6 @@ func add_synchronization_nodes (chain_sync_p float64, chains []int, g *graph.Gra
 			}
 		}
 	}
-
-	return nil
 }
 
 /*
@@ -671,10 +748,9 @@ func synthesize_node_priorities (chains, priorities []int, g *graph.Graph) map[i
 	return node_prio_map
 }
 
-
 /*
  *******************************************************************************
- *                                    Main                                     *
+ *                        Benchmarks & Setup Functions                         *
  *******************************************************************************
 */
 
@@ -789,195 +865,429 @@ func get_random_merges (chains []int, merge_p float64) ([]int, []int) {
 	return from, to
 }
 
-func main () {
-	var benchmarks []*benchmark.Benchmark
-	var err error
-	var input Config
-	var data []byte
+/*
+ *******************************************************************************
+ *                           Program Stage Functions                           *
+ *******************************************************************************
+*/
 
-	// Expect input as a JSON file
-	if len(os.Args) != 2 {
-		fmt.Printf("%s <config.json>\n", os.Args[0])
-		return
+func set_seed_and_directory (rules Rules, s *System) {
+	info("Seeding PRNG + Setting directory ...\n")
+	rand.Seed(int64(rules.Random_seed))
+	s.Directory = rules.Directory
+	info("...OK\n")
+}
+
+func set_benchmarks (s *System) {
+	info("Setting up benchmarks ...\n")
+
+	// Setup the configuration for the benchmark folders
+	benchmark_config := benchmark.Configuration{
+		Src:   s.Directory + "/benchmarks/bench/sequential",
+		Stats: "stats",
+		Bin:   "bin",
 	}
 
-	// Attempt to open file
-	if data, err = ioutil.ReadFile(os.Args[1]); nil != err {
-		check(err, fmt.Sprintf("Unable to open %s", os.Args[1]))()
-		return
-	}
+	// Evaluate + obtain them
+	benchmarks, err := get_benchmarks(benchmark_config)
+	check(err, "Benchmark configuration")()
 
-	// Attempt to decode argument
-	err = json.Unmarshal(data, &input)
-	check(err, "Unable to unmarshal the input argument!")()
-	show_config(input)
-
-	// Apply random seed
-	fmt.Printf("Seed = %d\n", input.Random_seed)
-	rand.Seed(int64(input.Random_seed))
-
-	// Extract path
-	path := input.Path
-	fmt.Printf("path = %s\n", input.Path)
-
-	// Get the benchmarks
-	bench_cfg := benchmark.Configuration{Src: path + "/benchmarks/bench/sequential", Stats: "stats", Bin: "bin"}
-	benchmarks, err = get_benchmarks(bench_cfg)
-
-	// Print benchmarks
+	// Set and display them
+	s.Benchmarks = benchmarks
 	for _, b := range benchmarks {
-		fmt.Printf("%16s\t\t\t%.2f us\t\t\t%.2f%%\t\t\t", b.Name, b.Runtime_us, b.Uncertainty)
+		put("%16s\t\t\t%.2f us\t\t\t%.2f%%\t\t\t", b.Name, b.Runtime_us, 
+			b.Uncertainty)
 		if b.Evaluated {
-			color.Black.Printf("Ready\n")
+			put("Ready\n")
 		} else {
-			color.Magenta.Printf("No data\n")
+			put("No data\n")
 		}
 	}
 
-	// Generate the chains
-	// TODO: Accept a graph from input
-	chains := get_chains(input.Chain_count, input.Chain_avg_len, input.Chain_variance)
-	colors := get_colors(input.Chain_count)
-	for i, c := range chains {
-		fmt.Printf("%d. %d\n", i, c)
+	info("... Ok\n")
+}
+
+func set_random_graph (rules Rules, s *System) {
+	info("Setting up the random graph ...")
+
+	// Create a number of chains, and pick colors for them
+	s.Chains = get_chains(rules.Chain_count, rules.Chain_avg_len, 
+		rules.Chain_variance)
+	s.Colors = get_colors(rules.Chain_count)
+	for i, c := range s.Chains {
+		put("Chain %d has length %d\n", i, c)
 	}
 
-	// Create the graph
-	g := ops.InitGraph(chains, colors)
-
-	// DEBUG: Print paths
-	fmt.Printf("%s", g.String(ops.Show))
-	for i := 0; i < input.Chain_count; i++ {
-		fmt.Printf("%s\n", ops.Path2String(ops.PathForChain(i, chains, g)))
-	}
+	// Create an edge-graph for the chains
+	s.Graph = ops.InitGraph(s.Chains, s.Colors)
 
 	// Perform random merges
-	from, to := get_random_merges(chains, input.Chain_merge_p)
+	from, to := get_random_merges(s.Chains, rules.Chain_merge_p)
 	for i := 0; i < len(from); i++ {
-		if can_merge(from[i], to[i], chains, g) {
-			info("Approved: %d -> %d\n", from[i], to[i])
-			ops.Merge(from[i], to[i], g)
+		if can_merge(from[i], to[i], s.Chains, s.Graph) {
+			put("Approved: %d -> %d\n", from[i], to[i])
+			ops.Merge(from[i], to[i], s.Graph)
 		} else {
-			warn("Rejected: %d -> %d\n", from[i], to[i])
+			put("Rejected: %d -> %d\n", from[i], to[i])
 		}
 	}
 
-	// Assign timing information to graph
-	us := temporal.Uunifast(1.0, len(chains))
-	ts, err := temporal.Make_Temporal_Data(temporal.Range{Min: float64(input.Min_period_us), 
-		Max: float64(input.Max_period_us)},input.Period_step, us)
-	info("Chains have a period in range [%d,%d]us, with a step of %fus", input.Min_period_us,
-		input.Max_period_us, input.Period_step)
+	info("... OK\n")
+}
+
+func set_utilisation_and_timing (rules Rules, s *System) {
+	info("Setting utilisation and timing ...\n")
+	min_us, max_us := rules.Min_period_us, rules.Max_period_us
+
+	// Get a utilisation breakdown for each chain
+	s.Utilisations = temporal.Uunifast(rules.Util_total, len(s.Chains))
+
+	// Map utilisation to a period of certain range, and computation time
+	timing, err := temporal.Make_Temporal_Data(
+		temporal.Range{Min: float64(min_us), Max: float64(max_us)},
+		rules.Period_step, s.Utilisations)
 	check(err, "Unable to generate timing data")()
-	for i := 0; i < len(ts); i++ {
-		fmt.Printf("Chain %d gets (U = %f, T = %f, C = %f)\n", i, us[i], ts[i].T, ts[i].C)
-	}
-	hyperperiod, err := temporal.Integral_Hyperperiod(ts)
-	check(err, "Unable to determine hyperperiod")()
-	info("Hyperperiod: %dus", hyperperiod)
 
-	// TODO: Some chains may begin with the same timer, meaning their period is
-	// not independent and thus their computation time needs to be fixed to match
-	// utilization!
-	// 1. Determine which chains are sharing timers
-	// 2. Pick one
-	// 3. Update the temporal data
-	ts = resolve_shared_timers(ts, us, chains, g)
-	fmt.Printf("Printing chains again after resolving conflicts...\n")
+	// Otherwise assign the timing data
+	s.Timing = timing
+	put("Period range: [%d,%d]us\n", min_us, max_us)
+	put("Step:         %fus\n", rules.Period_step)
+
+	// Print timing data (initial)
+	put("Initial timing data ...\n")
+	for i := 0; i < len(timing); i++ {
+		put("Chain %d: (U = %f, T = %f, C = %f)\n", i, s.Utilisations[i],
+			timing[i].T, timing[i].C)
+	}
+
+	// Resolve shared timers
+	// [About] This occurs when chains begin with the same timer,
+	// meaning their period is not independent. Thus the computation time
+	// needs to be fixed to match utilisation. It works as follows: 
+	// 1. Determine which chains share timeres
+	// 2. Pick one to keep
+	// 3. Update the timing data of all chains after redistributing
+	put("Resolving shared timers ...")
+	s.Timing = resolve_shared_timers(s.Timing, s.Utilisations, s.Chains, s.Graph)
+
+	// Build and set the periods convenience slice
 	periods := []float64{}
-	for i := 0; i < len(ts); i++ {
-		fmt.Printf("Chain %d gets (T = %f, C = %f)\n", i, ts[i].T, ts[i].C)
-		periods = append(periods, ts[i].T)
+	for i := 0; i < len(s.Timing); i++ {
+		periods = append(periods, s.Timing[i].T)
+	}
+	s.Periods = periods
+
+	// Build and set a mapping of WCET to each node
+	s.Node_wcet_map = map_wcet_to_nodes(s.Timing, s.Chains, s.Graph)
+
+	// Print timing data (final)
+	put("Final timing data ...\n")
+	for i := 0; i < len(s.Timing); i++ {
+		put("Chain %d: (U = %f, T = %f, C = %f)\n", i, s.Utilisations[i],
+			s.Timing[i].T, s.Timing[i].C)
 	}
 
-	// Map computation time to nodes
-	node_wcet_map := map_wcet_to_nodes(ts, chains, g)
-	for key, value := range node_wcet_map {
-		fmt.Printf("Node %d WCET = %f\n", key, value)
-	}
+	// Compute and set hyperperiod
+	hyperperiod, err := temporal.Integral_Hyperperiod(s.Timing)
+	check(err, "Unable to compute hyperperiod")()
+	s.Hyperperiod = hyperperiod
+	put("Hyperperiod:    %dus\n", hyperperiod)
 
-	// Assign benchmark to each node
-	node_work_map := map_benchmarks_to_nodes(node_wcet_map, benchmarks)
-	for node, work_assign := range node_work_map {
-		if work_assign.Benchmark == nil {
-			fmt.Printf("Node %d has been assigned nothing, since no benchmark suits it...\n", node)
+	info("... OK\n")
+}
+
+func set_node_benchmarks (s *System) bool {
+	info("Assigning benchmarks to nodes ...\n")
+
+	// Obtain the mapping
+	node_work_map := map_benchmarks_to_nodes(s.Node_wcet_map, s.Benchmarks)
+
+	// Check the mapping
+	for node, work_assigned := range node_work_map {
+		if nil == work_assigned.Benchmark {
+			return false
 		} else {
-			fmt.Printf("Node %d has been assigned {.Benchmark = %s, .Iterations = %d} for %f <= %f WCET\n", 
-				node, work_assign.Benchmark.Name, work_assign.Iterations, 
-				float64(work_assign.Iterations) * work_assign.Benchmark.Runtime_us, node_wcet_map[node])			
-			}
+			put("Node %d assigned {.Benchmark = %s, .Iterations = %d}\n",
+				node, work_assigned.Benchmark.Name, work_assigned.Iterations)
+			put("    %f < %f WCET\n", float64(work_assigned.Iterations) * 
+				work_assigned.Benchmark.Runtime_us, s.Node_wcet_map[node])
+		}
 	}
 
-	// Extend the graph with synchronizations (which implicity lengthens the chain)
-	g_sync := add_synchronization_nodes(input.Chain_sync_p, chains, g)
-	fmt.Println(g_sync)
+	// Assign the mapping
+	s.Node_work_map = node_work_map
 
-	// Print paths
+	info("... OK\n")
+	return true
+}
+
+func set_graph_synchronisations (rules Rules, s *System) {
+	info("Extending the graph with synchronisation nodes ...\n")
+
+	// Extend graph with synchronisations
+	add_synchronisation_nodes(rules.Chain_sync_p, s.Chains, s.Graph)
+
+	// Compute and set the paths (they shouldn't change after this)
 	paths := []([]int){}
-	fmt.Println("UPDATED PATHS AFTER SYNC")
-	for i := 0; i < input.Chain_count; i++ {
-		paths = append(paths, ops.PathForChain(i, chains, g))
-		fmt.Printf("%s\n", ops.Path2String(paths[i]))
+	put("Updating paths after extending the graph ...\n")
+	for i := 0; i < rules.Chain_count; i++ {
+		paths = append(paths, ops.PathForChain(i, s.Chains, s.Graph))
+		put("%d: %s\n", i, ops.Path2String(paths[i]))
 	}
 
-	// Synthesize prioritites for the graph
-	// TODO: Make this something that can be changed via input
-	// Right now, only chain zero is prioritized
-	priorities := make([]int, input.Chain_count)
-	priorities[0] = 1;
-	for i := 1; i < input.Chain_count; i++ {
+	// Update paths
+	s.Paths = paths
+
+	info("... OK\n")
+}
+
+func set_node_priorities (rules Rules, s *System) {
+	info("Assigning priorities to nodes ...\n")
+
+	// Create default chain priorities
+	priorities := make([]int, rules.Chain_count)
+	priorities[0] = 1
+	for i := 1; i < rules.Chain_count; i++ {
 		priorities[i] = 0
-		fmt.Printf("Chain %d has priority %d\n", i, i)
-	}
-	node_prio_map := synthesize_node_priorities(chains, priorities, g)
-	for key, value := range node_prio_map {
-		fmt.Printf("Node %d has prio %d\n", key, value)
 	}
 
-	// Convert the graph into a ROS-like representation
-	app := app.Init_Application("beta", input.PPE, input.Executor_count)
-	app.From_Graph(chains, paths, periods, node_wcet_map, node_work_map, node_prio_map, g)
-
-	// Metadata for application generation
-	meta := gen.Metadata {
-		Packages: []string{"std_msgs", "message_filters"},
-		Includes: []string{"std_msgs/msg/int64.hpp", "message_filters/subscriber.h", "message_filters/sync_policies/approximate_time.h",
-							app.Name + "/" + "tacle_benchmarks.h", app.Name + "/" + "roslog.h"},
-		MsgType:        "std_msgs::msg::Int64",
-		PPE:            app.PPE,
-		FilterPolicy:   "message_filters::sync_policies::ApproximateTime",
-		Libraries:      []string{path + "/lib/libtacle.a"},
-		Headers:        []string{path + "/lib/tacle_benchmarks.h", path + "/include/roslog.h"},
-		Sources:        []string{path + "/src/roslog.cpp"},
-		Duration_us:    int64(input.Hyperperiod_count) * hyperperiod,
+	for chain, priority := range priorities {
+		put("Chain %d has priority: %d\n", chain, priority)
 	}
 
-	// Graphdata for application generation
+	// Apply chain priorities
+	s.Priorities = priorities
+
+	// Apply priority synthesis
+	put("Synthesizing priorities ...\n")
+	node_prio_map := synthesize_node_priorities(s.Chains, s.Priorities, s.Graph)
+	for node_id, node_prio := range node_prio_map {
+		put("Node %d has priority %d\n", node_id, node_prio)
+	}
+
+	// Set the map
+	s.Node_prio_map = node_prio_map
+
+	info("... OK\n")
+}
+
+func generate_ros_application (name string, rules Rules, s *System) {
+	info("Generating the ROS application ...\n")
+
+	// Create an application from the graph
+	ros_app := app.Init_Application(name, rules.PPE, rules.Executor_count)
+	ros_app.From_Graph(s.Chains, s.Paths, s.Periods, s.Node_wcet_map, 
+		s.Node_work_map, s.Node_prio_map, s.Graph)
+
+	// RCLCPP Metadata
+	pkgs := []string{"std_msgs", "message_filters"}
+	incl := []string{"std_msgs/msg/int64.hpp",
+		"message_filters/subscriber.h",
+		"message_filters/sync_policies/approximate_time.h",
+		name + "/" + "tacle_benchmarks.h",
+	    name + "/" + "roslog.h",
+	}
+	libs := []string{
+		s.Directory + "/lib/libtacle.a",
+	}
+	headers := []string{
+		s.Directory + "/lib/tacle_benchmarks.h",
+		s.Directory + "/include/roslog.h",
+	}
+	srcs := []string{
+		s.Directory + "/src/roslog.cpp",
+	}
+
+	// Prepare meta-data for the RCLCPP representation
+	meta_data := gen.Metadata{
+		Packages:     pkgs,
+		Includes:     incl,
+		MsgType:      "std_msgs::msg::Int64",
+		PPE:          ros_app.PPE,
+		FilterPolicy: "message_filters::sync_policies::ApproximateTime",
+		Libraries:    libs,
+		Headers:      headers,
+		Sources:      srcs,
+		Duration_us:  int64(rules.Hyperperiod_count) * s.Hyperperiod,
+	}
+
+	// Prepare graph data for informing application generation
 	graph_data := gen.Graphdata {
-		Chains:        chains,
-		Node_wcet_map: node_wcet_map,
-		Node_prio_map: node_prio_map,
-		Graph:         g,
+		Chains:        s.Chains,
+		Node_wcet_map: s.Node_wcet_map,
+		Node_prio_map: s.Node_prio_map,
+		Graph:         s.Graph,
 	}
 
 	// Generate the application
-	err = gen.GenerateApplication(app, path, meta, graph_data)
+	err := gen.GenerateApplication(ros_app, s.Directory, meta_data, graph_data)
 	check(err, "Unable to generate application")()
-	info("Nominal")
+
+	info("... OK\n")
+}
+
+func generate_chain_file (rules Rules, s *System) {
+	info("Generating a chain file for analysis ...\n")
+
+	// Convert chain periods from float to int
+	chain_periods_integer := []int{}
+	for _, p := range s.Periods {
+		chain_periods_integer = append(chain_periods_integer, int(p))
+	}
+
+	// Debug
+	put("len(s.Chains) = %d\n", len(s.Chains))
+	put("len(chain_periods_integer) = %d\n", len(chain_periods_integer))
+	put("len(s.Priorities) = %d\n", len(s.Priorities))
+	put("len(s.Paths) = %d\n", len(s.Paths))
+	put("len(s.Utilisations) = %d\n", len(s.Utilisations))
+
+	// Generate the file
+	err := analysis.WriteChains(s.Directory + "/chains.json", 
+		rules.Random_seed, rules.PPE, s.Chains, chain_periods_integer,
+		s.Priorities, s.Paths, s.Utilisations)
+	check(err, "Unable to generate chains analysis file")()
+
+	info("... OK\n")
+}
+
+/*
+ *******************************************************************************
+ *                                    Main                                     *
+ *******************************************************************************
+*/
+
+// Returns an Argument structure with default arguments pre-filled
+func bind(k string, f func(string) error) Argument {
+	return Argument{Keyword: k, Value: nil, Action: f}
+}
+
+// Returns nil if given string could be matched to arg (and configures arg)
+func match_argument (s string, args *[]Argument) error {
+	for i, arg := range (*args) {
+		prefix := fmt.Sprintf("--%s=", arg.Keyword)
+		if strings.HasPrefix(s, prefix) {
+			value := s[len(prefix):]
+			(*args)[i].Value = &value
+			return nil
+		}
+	}
+	return errors.New(fmt.Sprintf("Unknown argument: \"%s\"", s))
+}
+
+func main () {
+	var err error
+	var system System
+	var rules Rules
+	var timing Timing
+	var is_custom_timing bool = false
+	var is_custom_rules  bool = false
+	var is_custom_config bool = false
+	var options []Argument = []Argument{
+		bind("rules-file", func (s string) error {
+			d, e := ioutil.ReadFile(s)
+			if nil != e {
+				return e
+			} else {
+				is_custom_rules = true
+			}
+			return json.Unmarshal(d, &rules)
+		}),
+		bind("timing-data", func (s string) error {
+			d := []byte(s)
+			is_custom_timing = true
+			return json.Unmarshal(d, &timing)
+		}),
+		bind("config-file", func (s string) error {
+			is_custom_config = true
+			return errors.New("Not supported at this time")
+		}),
+		bind("verbose", func (s string) error {
+			if s == "true" {
+				g_verbose = true
+				return nil
+			}
+			if s != "false" {
+				return errors.New("Expected \"true\" or \"false\"")
+			}
+			return nil
+		}),
+	}
+
+	// Check arguments
+	for i := 1; i < len(os.Args); i++ {
+		err = match_argument(os.Args[i], &options)
+		check(err, "Argument %d", i-1)()
+	}
+	for i, arg := range options {
+		if nil != arg.Value {
+			check(arg.Action(*(arg.Value)), fmt.Sprintf("Option %d: %s", i,
+				arg.Keyword))()
+		}
+	}
+
+	// Check for contradictory rules
+	if is_custom_rules == is_custom_config {
+		fmt.Printf("%s (--rules-file=<filename> [--timing-data=<filename>] | --config-file=<filename>)\n", 
+			os.Args[0])
+		fmt.Println(g_usage)
+		return
+	}
+
+	// Attempt to open timing data, if set
+	if is_custom_timing {
+		info("Custom timing information is in use!")
+	}
+
+	// 1. Seed and directory setup
+	set_seed_and_directory(rules, &system)
+
+	// 2. Set benchmarks
+	set_benchmarks(&system)
+
+	// 3. Generate random graph
+	set_random_graph(rules, &system)
+
+
+	// Try this a few times
+	attempts, max_attempts := 0, 3
+	for attempts < max_attempts {
+
+		// 4. Assign utilisation and timing
+		set_utilisation_and_timing(rules, &system)
+
+		// 5. Map benchmarks to nodes
+		if (set_node_benchmarks(&system)) {
+			break
+		} else {
+			warn("Failed to generate suitable timing ... trying again\n")
+			attempts++
+		}
+	}
+	if attempts == max_attempts {
+		reason := fmt.Sprintf("Exhausted %d/%d attempts to match benchmarks to timing data",
+			max_attempts, max_attempts)
+		check(errors.New(reason), "Benchmark assignment")()
+	}
+
+	// 6. Perform synchronisations (if configured)
+	set_graph_synchronisations(rules, &system)
+
+	// 7. Assign priorities to nodes
+	set_node_priorities(rules, &system)
+
+	// 8. Generate the ROS application
+	generate_ros_application("mike", rules, &system)
+
+	// 9. Generate the chains file
+	generate_chain_file(rules, &system)
 
 	// Warn that utilisation does not apply if synchronization enabled
-	if input.Chain_sync_p > 0.0 {
+	if rules.Chain_sync_p > 0.0 {
 		warn("Nonzero chance of sync nodes, means that utilisation does not apply as expected!")
 	}
 
-	// Write the chains file, which is used for analysis
-	periods_int := []int{}
-	for _, p := range periods {
-		periods_int = append(periods_int, int(p))
-	}
-	err = analysis.WriteChains(path + "/chains.json", input.Random_seed, input.PPE, chains, 
-		periods_int, priorities, paths, us)
-	check(err, "Unable to generate chains analysis file")()
+	info("Done")
 
 	// Todo:
 	// 1. Make sure two versions of each application are generated (vanilla, ppe)
@@ -1021,5 +1331,9 @@ func main () {
 
 	// TODO: 
 	// Ensure the priority range given to the PPE is determined by the number of 
-	// differing priorities desired 
+	// differing priorities desired
+
+	// TODO:
+	// Ensure you can somehow lengthen each path WCET by a certain amount without touching
+	// the existing amount of work
 }
