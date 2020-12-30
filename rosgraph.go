@@ -36,7 +36,7 @@ const g_usage string = `
                                rules file should be JSON encoded. 
     --config-file=<filename> : Generate a ROS program exactly as specified. The
                                config file should be JSON encoded.
-    --timing-data=<data>     : When randomly generating a program, assign 
+    --timing-data=<json>     : When randomly generating a program, assign 
                                computation time and period to chains according 
                                to the given timing data. This crudely maps 
                                computation time, period to nodes (callbacks). 
@@ -79,11 +79,8 @@ type Rules struct {
 	Random_seed        int
 }
 
-// Vector mapping a node index to a WCET, and period value (period for origin)
-type Timing struct {
-	Node_wcet_us       []int
-	Node_period_us     []int
-}
+// Wraps an array mapping chains (index) to temporal data (total WCET, Period)
+type CustomTiming []temporal.Temporal
 
 // Encapsulates an argument, expected as "--<keyword>=<Value>"
 type Argument struct {
@@ -272,11 +269,11 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
 	}
 
 	// Condition: Don't allow chains to be completely merged with one another
-	// Solution: If merging the node means there remains no unique node between the 
+	// Solution: If merging the node means there remains no unique node within the 
 	//           chain being merged into, or the chain merging, from all other other 
 	//           chains - then disallow the merge
 	if unique_paths(from, to) == false {
-		debug("Cannot merge %d and %d, as the chains will not be distinguishable (2.1)\n", from, to)
+		debug("Cannot merge %d and %d, as one chain will no longer have any unique node (2.1)\n", from, to)
 		return false		
 	}
 
@@ -923,29 +920,72 @@ func set_random_graph (rules Rules, s *System) {
 	info("... OK\n")
 }
 
-func set_utilisation_and_timing (rules Rules, s *System) {
+func set_utilisation_and_timing (custom_timing CustomTiming,
+	is_custom_timing bool, rules Rules, s *System) {
 	info("Setting utilisation and timing ...\n")
-	min_us, max_us := rules.Min_period_us, rules.Max_period_us
 
-	// Get a utilisation breakdown for each chain
-	s.Utilisations = temporal.Uunifast(rules.Util_total, len(s.Chains))
+	if is_custom_timing {
+
+		// Validate custom timing
+		if len(custom_timing) != len(s.Chains) {
+			reason := fmt.Sprintf("Custom timing length (%d) mismatch (%d chains)",
+				len(custom_timing), len(s.Chains))
+			check(errors.New(reason), "Custom timing check")()
+		}
+
+		// Warn user that infeasible utilisation cannot be re-sampled
+		warn("Resampling bad utilisation not available with custom timing")
+
+		// Use provided timing to compute utilisation
+		utilisations, u_sum := make([]float64, len(s.Chains)), 0.0
+		for chain_id, chain_timing := range custom_timing {
+			utilisations[chain_id] = chain_timing.C / chain_timing.T
+			u_sum += utilisations[chain_id]
+		}
+
+		// Check that the given utilisation is under the rules threshold
+		if u_sum > rules.Util_total {
+			reason := fmt.Sprintf("Utilisation under custom timing exceeds threshold (%f > %f)",
+				u_sum, rules.Util_total)
+			check(errors.New(reason), "Utilisation check")()
+		}
+
+		// Assign utilisations
+		s.Utilisations = utilisations
+
+	} else {
+
+		// Get a random utilisation breakdown for each chain
+		s.Utilisations = temporal.Uunifast(rules.Util_total, len(s.Chains))		
+	}
 
 	// Map utilisation to a period of certain range, and computation time
-	timing, err := temporal.Make_Temporal_Data(
-		temporal.Range{Min: float64(min_us), Max: float64(max_us)},
-		rules.Period_step_us, s.Utilisations)
-	check(err, "Unable to generate timing data")()
+	if is_custom_timing {
 
-	// Otherwise assign the timing data
-	s.Timing = timing
-	debug("Period range: [%d,%d]us\n", min_us, max_us)
-	debug("Step:         %fus\n", rules.Period_step_us)
+		// Assign the custom timing directly
+		s.Timing = custom_timing
+
+	} else {
+
+		// Derive timing data from utilisations
+		min_us, max_us := rules.Min_period_us, rules.Max_period_us
+		timing, err := temporal.Make_Temporal_Data(
+			temporal.Range{Min: float64(min_us), Max: float64(max_us)},
+			rules.Period_step_us, s.Utilisations)
+		check(err, "Unable to generate timing data")()
+
+		// Otherwise assign the timing data
+		s.Timing = timing
+		debug("Period range: [%d,%d]us\n", min_us, max_us)
+		debug("Step:         %fus\n", rules.Period_step_us)		
+	}
+
 
 	// Print timing data (initial)
 	debug("Initial timing data ...\n")
-	for i := 0; i < len(timing); i++ {
+	for i := 0; i < len(s.Timing); i++ {
 		debug("Chain %d: (U = %f, T = %f, C = %f)\n", i, s.Utilisations[i],
-			timing[i].T, timing[i].C)
+			s.Timing[i].T, s.Timing[i].C)
 	}
 
 	// Resolve shared timers
@@ -1167,7 +1207,7 @@ func main () {
 	var err error
 	var system System
 	var rules Rules
-	var timing Timing
+	var custom_timing CustomTiming
 	var is_custom_timing bool = false
 	var is_custom_rules  bool = false
 	var is_custom_config bool = false
@@ -1184,7 +1224,7 @@ func main () {
 		bind("timing-data", func (s string) error {
 			d := []byte(s)
 			is_custom_timing = true
-			return json.Unmarshal(d, &timing)
+			return json.Unmarshal(d, &custom_timing)
 		}),
 		bind("config-file", func (s string) error {
 			is_custom_config = true
@@ -1226,7 +1266,7 @@ func main () {
 
 	// Check for contradictory rules
 	if is_custom_rules == is_custom_config {
-		fmt.Printf("%s (--rules-file=<filename> [--timing-data=<filename>] | --config-file=<filename>)\n", 
+		fmt.Printf("%s (--rules-file=<filename> [--timing-data=<json>] | --config-file=<filename>)\n", 
 			os.Args[0])
 		fmt.Println(g_usage)
 		return
@@ -1252,7 +1292,8 @@ func main () {
 	for attempts < max_attempts {
 
 		// 4. Assign utilisation and timing
-		set_utilisation_and_timing(rules, &system)
+		set_utilisation_and_timing(custom_timing, is_custom_timing,
+			rules, &system)
 
 		// 5. Map benchmarks to nodes
 		if (set_node_benchmarks(&system)) {
