@@ -141,14 +141,6 @@ func info (s string, args ...interface{}) {
 	}
 }
 
-func put_kv (k, v string) {
-	if g_verbose {
-		color.Style{color.FgGreen, color.OpBold}.Printf("%s", k)
-		fmt.Printf("=")
-		color.Style{color.FgYellow, color.OpBold}.Printf("%s\n", v)
-	}
-}
-
 func show_rules (rules Rules) {
 	color.Blue.Printf("Directory:         "); color.Green.Printf("%s\n", rules.Directory)
 	color.Blue.Printf("Chain_count:       "); color.Green.Printf("%d\n", rules.Chain_count)
