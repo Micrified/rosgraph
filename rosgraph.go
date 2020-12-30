@@ -42,12 +42,17 @@ const g_usage string = `
                                computation time, period to nodes (callbacks). 
                                Only available with --rules-file
     --verbose=(true|false)   : Defaults to false. When set to true, various 
-                               debugging messages are printed 
+                               informative messages are printed
+    --debug=(true|false)     : Defaults to false. When set to true, various
+                               debugging messages are printed
 --------------------------------------------------------------------------------
 `
 
-// Verbosity
+// Verbosity flag (should default false)
 var g_verbose bool = true
+
+// Debugging flag (should default false)
+var g_debug bool = true
 
 /*
  *******************************************************************************
@@ -57,6 +62,7 @@ var g_verbose bool = true
 
 // Rules for generation of random ROS programs
 type Rules struct {
+	Name               string
 	Directory          string
 	Chain_count        int
 	Chain_avg_len      int
@@ -66,7 +72,7 @@ type Rules struct {
 	Util_total         float64
 	Min_period_us      int
 	Max_period_us      int
-	Period_step        float64
+	Period_step_us     float64
 	Hyperperiod_count  int
 	PPE                bool
 	Executor_count     int
@@ -111,9 +117,16 @@ type System struct {
  *******************************************************************************
 */
 
-	// Closure: Prints only if verbose is set
+// Only prints if verbose is enabled
 func put (s string, args... interface{}) {
 	if g_verbose {
+		fmt.Printf(s, args...)
+	}
+}
+
+// Only prints if debug is enabled
+func debug (s string, args... interface{}) {
+	if g_debug {
 		fmt.Printf(s, args...)
 	}
 }
@@ -139,23 +152,6 @@ func info (s string, args ...interface{}) {
 		color.Style{color.FgGreen, color.OpBold}.Printf("%s\n", 
 			fmt.Sprintf(s, args...))		
 	}
-}
-
-func show_rules (rules Rules) {
-	color.Blue.Printf("Directory:         "); color.Green.Printf("%s\n", rules.Directory)
-	color.Blue.Printf("Chain_count:       "); color.Green.Printf("%d\n", rules.Chain_count)
-	color.Blue.Printf("Chain_avg_len:     "); color.Green.Printf("%d\n", rules.Chain_avg_len)
-	color.Blue.Printf("Chain_merge_p:     "); color.Green.Printf("%.2f\n", rules.Chain_merge_p)
-	color.Blue.Printf("Chain_sync_p:      "); color.Green.Printf("%.2f\n", rules.Chain_sync_p)
-	color.Blue.Printf("Chain_variance:    "); color.Green.Printf("%.2f\n", rules.Chain_variance)
-	color.Blue.Printf("Util_total:        "); color.Green.Printf("%.2f\n", rules.Util_total)
-	color.Blue.Printf("Min_period_us:     "); color.Green.Printf("%d\n", rules.Min_period_us)
-	color.Blue.Printf("Max_period_us:     "); color.Green.Printf("%d\n", rules.Max_period_us)
-	color.Blue.Printf("Period_step:       "); color.Green.Printf("%.2f\n", rules.Period_step)
-	color.Blue.Printf("Hyperperiod_count: "); color.Green.Printf("%d\n", rules.Hyperperiod_count)
-	color.Blue.Printf("PPE:               "); color.Green.Printf("%v\n", rules.PPE)
-	color.Blue.Printf("Executor_count:    "); color.Green.Printf("%d\n", rules.Executor_count)
-	color.Blue.Printf("Random_seed:       "); color.Green.Printf("%d\n", rules.Random_seed)
 }
 
 /*
@@ -241,21 +237,21 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
 	// Compute all current paths for the chains
 	for i := 0; i < len(chains); i++ {
 		map_chain_to_path[i] = ops.PathForChain(i, chains, g)
-		fmt.Printf("%s\n", ops.Path2String(map_chain_to_path[i]))
+		debug("%s\n", ops.Path2String(map_chain_to_path[i]))
 	}
 
 	// Condition: Starting elements are special and cannot merge
 	// Solution:  If 'from' and 'to' are not the same type of element - return false
 	start_rows := ops.StartingRows(chains)
 	if contains(from, start_rows) != contains(to, start_rows) {
-		fmt.Printf("Cannot merge %d and %d, as nodes are of incompatible types!\n", from, to)
+		debug("Cannot merge %d and %d, as nodes are of incompatible types!\n", from, to)
 		return false
 	}
 
 	// Condition: The length of a path must not be shortened during a merge
 	// Solution: If 'to' and 'from' have any direct edges between one another - return false
 	if ops.EdgeBetween(from, to, g) {
-		fmt.Printf("Cannot merge %d and %d, as there is a direct edge between them!\n", from, to)
+		debug("Cannot merge %d and %d, as there is a direct edge between them!\n", from, to)
 		return false
 	}
 
@@ -263,7 +259,7 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
 	// Solution:  Replace every path containing 'from' with 'to'. Then check for a loop
 	for chain_id, chain_path := range map_chain_to_path {
 		if cycle_in_paths(chain_id, replace_in_path(from, to, chain_path)) {
-			fmt.Printf("Cannot merge %d->%d as a cycle is formed in chain %d\n", from, to, chain_id)
+			debug("Cannot merge %d->%d as a cycle is formed in chain %d\n", from, to, chain_id)
 			return false
 		}
 	}
@@ -272,7 +268,7 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
 	// Solution: If either node belongs to chain of length 1 - return false
 	to_chain_id, from_chain_id := ops.ChainForRow(to, chains), ops.ChainForRow(from, chains)
 	if chains[to_chain_id] == 1 || chains[from_chain_id] == 1 {
-		fmt.Printf("Cannot merge %d and %d, as one of the chains will not be distinguishable (1)\n", from, to)
+		debug("Cannot merge %d and %d, as one of the chains will not be distinguishable (1)\n", from, to)
 	}
 
 	// Condition: Don't allow chains to be completely merged with one another
@@ -280,17 +276,17 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
 	//           chain being merged into, or the chain merging, from all other other 
 	//           chains - then disallow the merge
 	if unique_paths(from, to) == false {
-		fmt.Printf("Cannot merge %d and %d, as the chains will not be distinguishable (2.1)\n", from, to)
+		debug("Cannot merge %d and %d, as the chains will not be distinguishable (2.1)\n", from, to)
 		return false		
 	}
 
 	// Condition: A merged element may not be connected to again (no longer 'exists')
 	if ops.Disconnected(from, g) || ops.Disconnected(to, g) {
-		fmt.Printf("Cannot merge %d and %d, as one of them is disconnected (already merged elsewhere)\n", from, to)
+		debug("Cannot merge %d and %d, as one of them is disconnected (already merged elsewhere)\n", from, to)
 		return false
 	}
 
-	fmt.Printf("Merge (%d,%d) allowed!\n", from, to)
+	debug("Merge (%d,%d) allowed!\n", from, to)
 	return true
 }
 
@@ -363,7 +359,7 @@ func add_synchronisation_nodes (chain_sync_p float64, chains []int, g *graph.Gra
 
 	// Perform a random merge between two of the pairs
 	for node, es := range node_edge_map {
-		fmt.Printf("Node %d has %d incoming edges\n", node, len(es))
+		debug("Node %d has %d incoming edges\n", node, len(es))
 
 		// Compute the number of attempts possible
 		for len(es) >= 2 {
@@ -389,14 +385,14 @@ func add_synchronisation_nodes (chain_sync_p float64, chains []int, g *graph.Gra
 				a, b := es[0], es[1]
 
 				// Issue a directive
-				fmt.Printf("Will be placing a sync node between %d-[%d]->%d, and %d-[%d]->%d\n",
+				debug("Will be placing a sync node between %d-[%d]->%d, and %d-[%d]->%d\n",
 					a.From, a.Edge.Tag, a.To, b.From, b.Edge.Tag, b.To)
-				fmt.Printf("%s", g.String(ops.Show))
+				debug("%s", g.String(ops.Show))
 
 				// Expand the graph with a new node
 				n := ops.ExtendGraphByOne(g)
 
-				fmt.Printf("After:\n%s", g.String(ops.Show))
+				debug("After:\n%s", g.String(ops.Show))
 
 				// Update the path with the new node
 				insert_in_path(a.From, (n-1), a.Edge.Tag)
@@ -407,7 +403,7 @@ func add_synchronisation_nodes (chain_sync_p float64, chains []int, g *graph.Gra
 				check(err, "Unable to rewire edge")()
 				err = ops.RewireTo(b.From, b.To, b.Edge.Tag, b.Edge.Num, (n-1), g)
 				check(err, "Unable to rewire edge")()
-				fmt.Printf("Set destination ...\n%s", g.String(ops.Show))
+				debug("Set destination ...\n%s", g.String(ops.Show))
 
 				// Wire node to destination
 				err = ops.Wire((n-1), a.To, a.Edge.Tag, a.Edge.Num + 1, a.Edge.Color, g)
@@ -415,7 +411,7 @@ func add_synchronisation_nodes (chain_sync_p float64, chains []int, g *graph.Gra
 				err = ops.Wire((n-1), b.To, b.Edge.Tag, b.Edge.Num + 1, b.Edge.Color, g)
 				check(err, "Unable to add edge!")()
 
-				fmt.Printf("With new edges:\n%s", g.String(ops.Show))
+				debug("With new edges:\n%s", g.String(ops.Show))
 
 				// Remove those two nodes from consideration, as they are already synced
 				sync = true
@@ -493,7 +489,7 @@ func resolve_shared_timers (ts []temporal.Temporal, us []float64, chains []int,
 
 		// Debug
 		if len(sharing) > 1 {
-			fmt.Printf("More than one chain start from node %d!\n", timer)
+			debug("More than one chain start from node %d!\n", timer)
 		}
 
 		// Update period and computation of all chains sharing the timer
@@ -542,7 +538,7 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 	// Closure: Computes difference in WCET, places in path budget
 	acc_diff := func (x, y interface{}) {
 		min_value, triple := x.(float64), y.(Triple)
-		fmt.Printf("Redistribution[%d] = %f - %f\n", triple.Chain, triple.WCET, min_value)
+		debug("Redistribution[%d] = %f - %f\n", triple.Chain, triple.WCET, min_value)
 		path_redistribution_budget[triple.Chain] += (triple.WCET - min_value)
 	}
 
@@ -557,7 +553,7 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 	// 3. In the end, we resolve the WCET by picking the minimum
 	for i, path := range paths {
 		wcet := ts[i].C / float64(len(path))
-		fmt.Printf("The WCET for each callback along path %d is (%f / %d) = %f\n", i, ts[i].C, len(path), wcet)
+		debug("The WCET for each callback along path %d is (%f / %d) = %f\n", i, ts[i].C, len(path), wcet)
 		for _, node := range path {
 			value, ok := node_map[node]
 			if !ok {
@@ -576,7 +572,7 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 		value.MapWith(&min_value, get_min)
 
 		// Store minimum value in node WCET
-		fmt.Printf("Minimum WCET for node %d is %f\n", key, min_value)
+		debug("Minimum WCET for node %d is %f\n", key, min_value)
 		node_wcet_map[key] = min_value
 
 		// Update each path with the differnece between their WCET and min
@@ -591,7 +587,7 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 		if path_redistribution_budget[i] == 0.0 {
 			continue
 		} else {
-			fmt.Printf("Path %d has a redistribution budget of %f\n", i, path_redistribution_budget[i])
+			debug("Path %d has a redistribution budget of %f\n", i, path_redistribution_budget[i])
 		}
 
 		// Otherwise collect unshared nodes on the path
@@ -887,12 +883,12 @@ func set_benchmarks (s *System) {
 	// Set and display them
 	s.Benchmarks = benchmarks
 	for _, b := range benchmarks {
-		put("%16s\t\t\t%.2f us\t\t\t%.2f%%\t\t\t", b.Name, b.Runtime_us, 
+		debug("%16s\t\t\t%.2f us\t\t\t%.2f%%\t\t\t", b.Name, b.Runtime_us, 
 			b.Uncertainty)
 		if b.Evaluated {
-			put("Ready\n")
+			debug("Ready\n")
 		} else {
-			put("No data\n")
+			debug("No data\n")
 		}
 	}
 
@@ -907,7 +903,7 @@ func set_random_graph (rules Rules, s *System) {
 		rules.Chain_variance)
 	s.Colors = get_colors(rules.Chain_count)
 	for i, c := range s.Chains {
-		put("Chain %d has length %d\n", i, c)
+		debug("Chain %d has length %d\n", i, c)
 	}
 
 	// Create an edge-graph for the chains
@@ -917,10 +913,10 @@ func set_random_graph (rules Rules, s *System) {
 	from, to := get_random_merges(s.Chains, rules.Chain_merge_p)
 	for i := 0; i < len(from); i++ {
 		if can_merge(from[i], to[i], s.Chains, s.Graph) {
-			put("Approved: %d -> %d\n", from[i], to[i])
+			debug("Approved: %d -> %d\n", from[i], to[i])
 			ops.Merge(from[i], to[i], s.Graph)
 		} else {
-			put("Rejected: %d -> %d\n", from[i], to[i])
+			debug("Rejected: %d -> %d\n", from[i], to[i])
 		}
 	}
 
@@ -937,18 +933,18 @@ func set_utilisation_and_timing (rules Rules, s *System) {
 	// Map utilisation to a period of certain range, and computation time
 	timing, err := temporal.Make_Temporal_Data(
 		temporal.Range{Min: float64(min_us), Max: float64(max_us)},
-		rules.Period_step, s.Utilisations)
+		rules.Period_step_us, s.Utilisations)
 	check(err, "Unable to generate timing data")()
 
 	// Otherwise assign the timing data
 	s.Timing = timing
-	put("Period range: [%d,%d]us\n", min_us, max_us)
-	put("Step:         %fus\n", rules.Period_step)
+	debug("Period range: [%d,%d]us\n", min_us, max_us)
+	debug("Step:         %fus\n", rules.Period_step_us)
 
 	// Print timing data (initial)
-	put("Initial timing data ...\n")
+	debug("Initial timing data ...\n")
 	for i := 0; i < len(timing); i++ {
-		put("Chain %d: (U = %f, T = %f, C = %f)\n", i, s.Utilisations[i],
+		debug("Chain %d: (U = %f, T = %f, C = %f)\n", i, s.Utilisations[i],
 			timing[i].T, timing[i].C)
 	}
 
@@ -959,7 +955,7 @@ func set_utilisation_and_timing (rules Rules, s *System) {
 	// 1. Determine which chains share timeres
 	// 2. Pick one to keep
 	// 3. Update the timing data of all chains after redistributing
-	put("Resolving shared timers ...")
+	debug("Resolving shared timers ...")
 	s.Timing = resolve_shared_timers(s.Timing, s.Utilisations, s.Chains, s.Graph)
 
 	// Build and set the periods convenience slice
@@ -973,9 +969,9 @@ func set_utilisation_and_timing (rules Rules, s *System) {
 	s.Node_wcet_map = map_wcet_to_nodes(s.Timing, s.Chains, s.Graph)
 
 	// Print timing data (final)
-	put("Final timing data ...\n")
+	debug("Final timing data ...\n")
 	for i := 0; i < len(s.Timing); i++ {
-		put("Chain %d: (U = %f, T = %f, C = %f)\n", i, s.Utilisations[i],
+		debug("Chain %d: (U = %f, T = %f, C = %f)\n", i, s.Utilisations[i],
 			s.Timing[i].T, s.Timing[i].C)
 	}
 
@@ -983,7 +979,7 @@ func set_utilisation_and_timing (rules Rules, s *System) {
 	hyperperiod, err := temporal.Integral_Hyperperiod(s.Timing)
 	check(err, "Unable to compute hyperperiod")()
 	s.Hyperperiod = hyperperiod
-	put("Hyperperiod:    %dus\n", hyperperiod)
+	debug("Hyperperiod:    %dus\n", hyperperiod)
 
 	info("... OK\n")
 }
@@ -999,9 +995,9 @@ func set_node_benchmarks (s *System) bool {
 		if nil == work_assigned.Benchmark {
 			return false
 		} else {
-			put("Node %d assigned {.Benchmark = %s, .Iterations = %d}\n",
+			debug("Node %d assigned {.Benchmark = %s, .Iterations = %d}\n",
 				node, work_assigned.Benchmark.Name, work_assigned.Iterations)
-			put("    %f < %f WCET\n", float64(work_assigned.Iterations) * 
+			debug("    %f < %f WCET\n", float64(work_assigned.Iterations) * 
 				work_assigned.Benchmark.Runtime_us, s.Node_wcet_map[node])
 		}
 	}
@@ -1021,10 +1017,10 @@ func set_graph_synchronisations (rules Rules, s *System) {
 
 	// Compute and set the paths (they shouldn't change after this)
 	paths := []([]int){}
-	put("Updating paths after extending the graph ...\n")
+	debug("Updating paths after extending the graph ...\n")
 	for i := 0; i < rules.Chain_count; i++ {
 		paths = append(paths, ops.PathForChain(i, s.Chains, s.Graph))
-		put("%d: %s\n", i, ops.Path2String(paths[i]))
+		debug("%d: %s\n", i, ops.Path2String(paths[i]))
 	}
 
 	// Update paths
@@ -1044,17 +1040,17 @@ func set_node_priorities (rules Rules, s *System) {
 	}
 
 	for chain, priority := range priorities {
-		put("Chain %d has priority: %d\n", chain, priority)
+		debug("Chain %d has priority: %d\n", chain, priority)
 	}
 
 	// Apply chain priorities
 	s.Priorities = priorities
 
 	// Apply priority synthesis
-	put("Synthesizing priorities ...\n")
+	debug("Synthesizing priorities ...\n")
 	node_prio_map := synthesize_node_priorities(s.Chains, s.Priorities, s.Graph)
 	for node_id, node_prio := range node_prio_map {
-		put("Node %d has priority %d\n", node_id, node_prio)
+		debug("Node %d has priority %d\n", node_id, node_prio)
 	}
 
 	// Set the map
@@ -1128,11 +1124,11 @@ func generate_chain_file (rules Rules, s *System) {
 	}
 
 	// Debug
-	put("len(s.Chains) = %d\n", len(s.Chains))
-	put("len(chain_periods_integer) = %d\n", len(chain_periods_integer))
-	put("len(s.Priorities) = %d\n", len(s.Priorities))
-	put("len(s.Paths) = %d\n", len(s.Paths))
-	put("len(s.Utilisations) = %d\n", len(s.Utilisations))
+	debug("len(s.Chains) = %d\n", len(s.Chains))
+	debug("len(chain_periods_integer) = %d\n", len(chain_periods_integer))
+	debug("len(s.Priorities) = %d\n", len(s.Priorities))
+	debug("len(s.Paths) = %d\n", len(s.Paths))
+	debug("len(s.Utilisations) = %d\n", len(s.Utilisations))
 
 	// Generate the file
 	err := analysis.WriteChains(s.Directory + "/chains.json", 
@@ -1197,6 +1193,16 @@ func main () {
 		bind("verbose", func (s string) error {
 			if s == "true" {
 				g_verbose = true
+				return nil
+			}
+			if s != "false" {
+				return errors.New("Expected \"true\" or \"false\"")
+			}
+			return nil
+		}),
+		bind("debug", func (s string) error {
+			if s == "true" {
+				g_debug = true
 				return nil
 			}
 			if s != "false" {
@@ -1269,7 +1275,7 @@ func main () {
 	set_node_priorities(rules, &system)
 
 	// 8. Generate the ROS application
-	generate_ros_application("mike", rules, &system)
+	generate_ros_application(rules.Name, rules, &system)
 
 	// 9. Generate the chains file
 	generate_chain_file(rules, &system)
