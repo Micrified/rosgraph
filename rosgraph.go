@@ -77,7 +77,7 @@ type Rules struct {
 	Max_period_us      int
 	Period_step_us     float64
 	Hyperperiod_count  int
-	Max_sim_time_us    int
+	Max_duration_us    int
 	PPE                bool
 	Executor_count     int
 	Random_seed        int
