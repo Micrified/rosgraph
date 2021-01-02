@@ -872,8 +872,8 @@ func set_benchmarks (s *System) {
 	// Setup the configuration for the benchmark folders
 	benchmark_config := benchmark.Configuration{
 		Src:   s.Directory + "/benchmarks/bench/sequential",
-		Stats: "stats",
-		Bin:   "bin",
+		Stats: s.Directory + "/stats",
+		Bin:   s.Directory + "/bin",
 	}
 
 	// Evaluate + obtain them

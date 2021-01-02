@@ -213,6 +213,9 @@ int main (int argc, char *argv[])
 	// Init logging
 	roslog_init();
 
+	// Print duration
+	std::cout << "Duration: " << std::to_string({{$meta.Duration_us}}) << "us" << std::endl;
+
 	// Spin for some duration
 	exec.spin_some(std::chrono::duration_cast<std::chrono::nanoseconds>(
 		std::chrono::microseconds({{$meta.Duration_us}})));
