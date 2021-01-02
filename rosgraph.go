@@ -34,7 +34,7 @@ const g_usage string = `
     --rules-file=<filename>  : Create a random ROS program within the given
                                constraints. Then generate the program. The 
                                rules file should be JSON encoded.
-    --rules-data=<filename>  : Create a random ROS program within the given
+    --rules-data=<json>      : Create a random ROS program within the given
                                contraints. Then generate the program. The rules
                                data should be JSON encoded.
     --config-file=<filename> : Generate a ROS program exactly as specified. The
@@ -1235,6 +1235,7 @@ func main () {
 		}),
 		bind("rules-data", func (s string) error {
 			d := []byte(s)
+			is_custom_rules = true
 			return json.Unmarshal(d, &rules)
 		}),
 		bind("timing-data", func (s string) error {
