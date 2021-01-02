@@ -77,6 +77,7 @@ type Rules struct {
 	Max_period_us      int
 	Period_step_us     float64
 	Hyperperiod_count  int
+	Max_sim_time_us    int
 	PPE                bool
 	Executor_count     int
 	Random_seed        int
@@ -1127,6 +1128,14 @@ func generate_ros_application (name string, rules Rules, s *System) {
 	}
 	srcs := []string{
 		s.Directory + "/src/roslog.cpp",
+	}
+
+	// Compute the duration (if maximum not -1, then apply)
+	duration_us := int64(rules.Hyperperiod_count) * s.Hyperperiod
+	if rules.Max_duration_us != -1 {
+		if int64(rules.Max_duration_us) < duration_us {
+			duration_us = int64(rules.Max_duration_us)
+		}
 	}
 
 	// Prepare meta-data for the RCLCPP representation
