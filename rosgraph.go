@@ -33,9 +33,12 @@ const g_usage string = `
 ---------------------------------- Options ------------------------------------
     --rules-file=<filename>  : Create a random ROS program within the given
                                constraints. Then generate the program. The 
-                               rules file should be JSON encoded. 
+                               rules file should be JSON encoded.
+    --rules-data=<filename>  : Create a random ROS program within the given
+                               contraints. Then generate the program. The rules
+                               data should be JSON encoded.
     --config-file=<filename> : Generate a ROS program exactly as specified. The
-                               config file should be JSON encoded.
+                               config file should be JSON encoded. [TODO]
     --timing-data=<json>     : When randomly generating a program, assign 
                                computation time and period to chains according 
                                to the given timing data. This crudely maps 
@@ -89,7 +92,7 @@ type Argument struct {
 	Action              func(string) error
 }
 
-// Encapsulates all data needed for generat
+// Encapsulates all data needed for generate
 type System struct {
 	Directory     string                  // Working directory
 	Chains        []int                   // Chain (lengths)
@@ -1172,8 +1175,17 @@ func generate_chain_file (rules Rules, s *System) {
 
 	// Generate the file
 	err := analysis.WriteChains(s.Directory + "/chains.json", 
-		rules.Random_seed, rules.PPE, s.Chains, chain_periods_integer,
-		s.Priorities, s.Paths, s.Utilisations)
+		rules.Random_seed, 
+		rules.PPE, 
+		rules.Chain_avg_len, 
+		rules.Chain_merge_p, 
+		rules.Chain_sync_p, 
+		rules.Chain_variance,
+		s.Chains, 
+		chain_periods_integer, 
+		s.Priorities,
+		s.Paths, 
+		s.Utilisations)
 	check(err, "Unable to generate chains analysis file")()
 
 	info("... OK\n")
@@ -1219,6 +1231,10 @@ func main () {
 			} else {
 				is_custom_rules = true
 			}
+			return json.Unmarshal(d, &rules)
+		}),
+		bind("rules-data", func (s string) error {
+			d := []byte(s)
 			return json.Unmarshal(d, &rules)
 		}),
 		bind("timing-data", func (s string) error {
