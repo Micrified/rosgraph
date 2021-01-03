@@ -23,6 +23,7 @@ import (
 	"ops"
 	"app"
 	"gen"
+	"types"
 
 	// Third party packages
 	"github.com/gookit/color"
@@ -62,26 +63,6 @@ var g_debug bool = true
  *                        Input/Output Type Definitions                        *
  *******************************************************************************
 */
-
-// Rules for generation of random ROS programs
-type Rules struct {
-	Name               string
-	Directory          string
-	Chain_count        int
-	Chain_avg_len      int
-	Chain_merge_p      float64
-	Chain_sync_p       float64
-	Chain_variance     float64
-	Util_total         float64
-	Min_period_us      int
-	Max_period_us      int
-	Period_step_us     float64
-	Hyperperiod_count  int
-	Max_duration_us    int
-	PPE                bool
-	Executor_count     int
-	Random_seed        int
-}
 
 // Wraps an array mapping chains (index) to temporal data (total WCET, Period)
 type CustomTiming []temporal.Temporal
@@ -860,7 +841,7 @@ func get_random_merges (chains []int, merge_p float64) ([]int, []int) {
  *******************************************************************************
 */
 
-func set_seed_and_directory (rules Rules, s *System) {
+func set_seed_and_directory (rules types.Rules, s *System) {
 	info("Seeding PRNG + Setting directory ...\n")
 	rand.Seed(int64(rules.Random_seed))
 	s.Directory = rules.Directory
@@ -896,7 +877,7 @@ func set_benchmarks (s *System) {
 	info("... Ok\n")
 }
 
-func set_random_graph (rules Rules, s *System) {
+func set_random_graph (rules types.Rules, s *System) {
 	info("Setting up the random graph ...")
 
 	// Create a number of chains, and pick colors for them
@@ -925,7 +906,7 @@ func set_random_graph (rules Rules, s *System) {
 }
 
 func set_utilisation_and_timing (custom_timing CustomTiming,
-	is_custom_timing bool, rules Rules, s *System) {
+	is_custom_timing bool, rules types.Rules, s *System) {
 	info("Setting utilisation and timing ...\n")
 
 	if is_custom_timing {
@@ -947,8 +928,8 @@ func set_utilisation_and_timing (custom_timing CustomTiming,
 			u_sum += utilisations[chain_id]
 		}
 
-		// Check that the given utilisation is under the rules threshold
-		if u_sum > rules.Util_total {
+		// Check that the given utilisation is under the rules threshold (with tolerance)
+		if math.Abs(u_sum - rules.Util_total) < 0.001 {
 			reason := fmt.Sprintf("Utilisation under custom timing exceeds threshold (%f > %f)",
 				u_sum, rules.Util_total)
 			check(errors.New(reason), "Utilisation check")()
@@ -1053,7 +1034,7 @@ func set_node_benchmarks (s *System) bool {
 	return true
 }
 
-func set_graph_synchronisations (rules Rules, s *System) {
+func set_graph_synchronisations (rules types.Rules, s *System) {
 	info("Extending the graph with synchronisation nodes ...\n")
 
 	// Extend graph with synchronisations
@@ -1073,7 +1054,7 @@ func set_graph_synchronisations (rules Rules, s *System) {
 	info("... OK\n")
 }
 
-func set_node_priorities (rules Rules, s *System) {
+func set_node_priorities (rules types.Rules, s *System) {
 	info("Assigning priorities to nodes ...\n")
 
 	// Create default chain priorities
@@ -1103,7 +1084,7 @@ func set_node_priorities (rules Rules, s *System) {
 	info("... OK\n")
 }
 
-func generate_ros_application (name string, rules Rules, s *System) {
+func generate_ros_application (name string, rules types.Rules, s *System) {
 	info("Generating the ROS application ...\n")
 
 	// Create an application from the graph
@@ -1166,7 +1147,7 @@ func generate_ros_application (name string, rules Rules, s *System) {
 	info("... OK\n")
 }
 
-func generate_chain_file (rules Rules, s *System) {
+func generate_chain_file (rules types.Rules, s *System) {
 	info("Generating a chain file for analysis ...\n")
 
 	// Convert chain periods from float to int
@@ -1227,7 +1208,7 @@ func match_argument (s string, args *[]Argument) error {
 func main () {
 	var err error
 	var system System
-	var rules Rules
+	var rules types.Rules
 	var custom_timing CustomTiming
 	var is_custom_timing bool = false
 	var is_custom_rules  bool = false
