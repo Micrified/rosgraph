@@ -929,7 +929,7 @@ func set_utilisation_and_timing (custom_timing CustomTiming,
 		}
 
 		// Check that the given utilisation is under the rules threshold (with tolerance)
-		if math.Abs(u_sum - rules.Util_total) < 0.001 {
+		if math.Abs(u_sum - rules.Util_total) > 0.001 {
 			reason := fmt.Sprintf("Utilisation under custom timing exceeds threshold (%f > %f)",
 				u_sum, rules.Util_total)
 			check(errors.New(reason), "Utilisation check")()
@@ -1382,4 +1382,9 @@ func main () {
 	// TODO:
 	// Ensure you can somehow lengthen each path WCET by a certain amount without touching
 	// the existing amount of work
+
+	// TODO:
+	// Okay, so we know that we're not using the original TACLe benchmarks. So why not just 
+	// make our own evaluation program for the timing instead of the convoluted shit with 
+	// perf. That makes it portable to macOS again and is so much simpler
 }
