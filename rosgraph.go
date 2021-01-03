@@ -743,14 +743,14 @@ func synthesize_node_priorities (chains, priorities []int, g *graph.Graph) map[i
  *******************************************************************************
 */
 
-func get_benchmarks (cfg benchmark.Configuration) ([]*benchmark.Benchmark, error) {
+func get_benchmarks (path string, cfg benchmark.Configuration) ([]*benchmark.Benchmark, error) {
 	var benchmarks   []*benchmark.Benchmark
 	var unevaluated []*benchmark.Benchmark
 	var err         error
 	var os          string = runtime.GOOS
 
 	// Init the benchmark environment
-	check(benchmark.Init_Env(cfg), "Initialize benchmark environment")()
+	check(benchmark.Init_Env(path, cfg), "Initialize benchmark environment")()
 
 	// Init the benchmarks themselves
 	benchmarks, err = benchmark.Init_Benchmarks(cfg)
@@ -878,7 +878,7 @@ func set_benchmarks (s *System) {
 	}
 
 	// Evaluate + obtain them
-	benchmarks, err := get_benchmarks(benchmark_config)
+	benchmarks, err := get_benchmarks(s.Directory, benchmark_config)
 	check(err, "Benchmark configuration")()
 
 	// Set and display them
@@ -1148,7 +1148,7 @@ func generate_ros_application (name string, rules Rules, s *System) {
 		Libraries:    libs,
 		Headers:      headers,
 		Sources:      srcs,
-		Duration_us:  int64(rules.Hyperperiod_count) * s.Hyperperiod,
+		Duration_us:  duration_us,
 	}
 
 	// Prepare graph data for informing application generation
