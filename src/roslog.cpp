@@ -49,10 +49,12 @@ int roslog_chain_from_topic (std::string topic)
 	return chain_id;
 }
 
-void roslog_log (int executor, int chain, int callback, long start, long duration)
+void roslog_log (int executor, int chain, long start, long duration)
 {
-	syslog(LOG_INFO, "{executor: %d, chain: %d, callback: %d, start: %ld, duration: %ld}",
-		executor, chain, callback, start, duration);
+	// syslog(LOG_INFO, "{executor: %d, chain: %d, callback: %d, start: %ld, duration: %ld}",
+	// 	executor, chain, callback, start, duration);
+	syslog(LOG_INFO, "{executor: %d, chain: %d, start: %ld, duration: %ld}",
+		executor, chain, start, duration);
 }
 
 void roslog_close ()

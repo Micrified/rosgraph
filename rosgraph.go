@@ -1003,6 +1003,12 @@ func set_utilisation_and_timing (custom_timing CustomTiming,
 	// Compute and set hyperperiod
 	hyperperiod, err := temporal.Integral_Hyperperiod(s.Timing)
 	check(err, "Unable to compute hyperperiod")()
+	
+	// Hyperperiod tends to overflow. So nullify it if negative
+	if hyperperiod < 0 {
+		hyperperiod = 0
+	}
+
 	s.Hyperperiod = hyperperiod
 	debug("Hyperperiod:    %dus\n", hyperperiod)
 

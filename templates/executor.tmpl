@@ -66,7 +66,7 @@ private:
 		{{- if .Timer}}
 		// Get timestamp
 		std_msgs::msg::Int64 msg_p;
-		msg_p.data = roslog_get_timestamp();
+		msg_p.data = timestamp_start;
 		{{- end}}
 
 		// Relay
@@ -79,14 +79,14 @@ private:
 		// TODO: Publish timing information (one off timer)
 			{{- range $i, $to := $callback.Topics_tx}}
 			{{- $ch := index $callback.Topics_cx $i}}
-			roslog_log({{$executor_id}}, {{$ch}}, {{$callback.ID}}, timestamp_start,
-				roslog_get_timestamp() - timestamp_start);
+			roslog_log({{$executor_id}}, {{$ch}}, msg_p.data,
+				roslog_get_timestamp() - msg_p.data);
 			{{- end}}
 		{{- else}}
 		if (topic == "T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}") {
 			// TODO: Publish timing information
-			roslog_log({{$executor_id}}, {{$ch}}, {{$callback.ID}}, timestamp_start,
-				roslog_get_timestamp() - timestamp_start);
+			roslog_log({{$executor_id}}, {{$ch}}, msg_p->data,
+				roslog_get_timestamp() - msg_p->data);
 			return;
 		}
 		{{- end}}
@@ -99,19 +99,6 @@ private:
 		}
 		{{- end}}
 		{{- end}}
-		{{- end}}
-
-		// Log end of callback
-		{{- if .Timer}}
-		{{- range $i, $to := .Topics_tx}}
-		{{- $ch := index $callback.Topics_cx $i}}
-		long timestamp_end = roslog_get_timestamp();
-		roslog_log({{$executor_id}}, {{$ch}}, {{$callback.ID}}, timestamp_start,
-			timestamp_end - timestamp_start);
-		{{- end}}
-		{{- else}}
-		roslog_log({{$executor_id}}, roslog_chain_from_topic(topic), {{.ID}}, 
-			timestamp_start, roslog_get_timestamp() - timestamp_start);
 		{{- end}}
 	}
 {{- end}}
