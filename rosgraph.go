@@ -1003,10 +1003,12 @@ func set_utilisation_and_timing (custom_timing CustomTiming,
 	// Compute and set hyperperiod
 	hyperperiod, err := temporal.Integral_Hyperperiod(s.Timing)
 	check(err, "Unable to compute hyperperiod")()
-	
+
 	// Hyperperiod tends to overflow. So nullify it if negative
-	if hyperperiod < 0 {
+	// Or if converting it to NS would overflow (> 1E15)
+	if hyperperiod < 0 || hyperperiod > (1 * 1000000000000000) {
 		hyperperiod = 0
+		warn("Hyperperiod overflow, or risk of overflow: Disabling hyperperiod!")
 	}
 
 	s.Hyperperiod = hyperperiod
@@ -1173,7 +1175,8 @@ func generate_chain_file (rules types.Rules, s *System) {
 	err := analysis.WriteChains(s.Directory + "/chains.json", 
 		rules.Random_seed, 
 		rules.PPE, 
-		rules.Chain_avg_len, 
+		rules.Chain_avg_len,
+		rules.Executor_count,
 		rules.Chain_merge_p, 
 		rules.Chain_sync_p, 
 		rules.Chain_variance,
