@@ -9,7 +9,6 @@ import (
 	"errors"
 	"math"
 	"math/rand"
-	"runtime"
 	"encoding/json"
 	"io/ioutil"
 
@@ -17,7 +16,6 @@ import (
 	"temporal"
 	"graph"
 	"set"
-	"benchmark"
 	"colors"
 	"analysis"
 	"ops"
@@ -80,13 +78,13 @@ type System struct {
 	Chains        []int                   // Chain (lengths)
 	Colors        []string                // Chain colors
 	Graph         *graph.Graph            // Edge-matrix for nodes
-	Benchmarks    []*benchmark.Benchmark  // Available benchmarks
+	Benchmarks    types.Benchmarks        // Benchmarks
 	Utilisations  []float64               // Chain utilisations (desired)
 	Timing        []temporal.Temporal     // Chain period + WCET
 	Hyperperiod   int64                   // LCM of periods (convenience)
 	Periods       []float64               // Chain periods (convenience)
-	Node_wcet_map map[int]float64         // Callback comp map
-	Node_work_map map[int]benchmark.Work  // Callback benchmark map
+	Node_wcet_map map[int]int64           // Callback comp map
+	Node_work_map map[int]types.Work  // Callback benchmark map
 	Paths         [][]int                 // Chain paths
 	Priorities    []int                   // Chain priorities
 	Node_prio_map map[int]int             // Per-callback priority
@@ -493,15 +491,15 @@ func resolve_shared_timers (ts []temporal.Temporal, us []float64, chains []int,
 type Triple struct {
 	Node    int
 	Chain   int
-	WCET    float64
+	WCET    int64
 }
 
 // Assigns WCET to all nodes within chains. Resolves clashes
-func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) map[int]float64 {
+func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) map[int]int64 {
 	var paths [][]int = make([][]int, len(chains))
 	var node_map map[int]*set.Set = make(map[int]*set.Set)
-	var node_wcet_map map[int]float64 = make(map[int]float64)
-	var path_redistribution_budget []float64 = make([]float64, len(chains))
+	var node_wcet_map map[int]int64 = make(map[int]int64)
+	var path_redistribution_budget []int64 = make([]int64, len(chains))
 
 	// Closure: Comparator for sets
 	set_cmp := func (x, y interface{}) bool {
@@ -509,9 +507,9 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 		return (a.Node == b.Node) && (a.Chain == b.Chain)
 	}
 
-	// Closure: Computes minimum over a set
+	// Closure: Sets minimum between a given minimum candidate triple WCET
 	get_min := func (x, y interface{}) {
-		min_int_p, triple := x.(*float64), y.(Triple)
+		min_int_p, triple := x.(*int64), y.(Triple)
 		if (triple.WCET < *min_int_p) {
 			*min_int_p = triple.WCET
 		}
@@ -519,8 +517,8 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 
 	// Closure: Computes difference in WCET, places in path budget
 	acc_diff := func (x, y interface{}) {
-		min_value, triple := x.(float64), y.(Triple)
-		debug("Redistribution[%d] = %f - %f\n", triple.Chain, triple.WCET, min_value)
+		min_value, triple := x.(int64), y.(Triple)
+		debug("Redistribution[%d] = %d - %d\n", triple.Chain, triple.WCET, min_value)
 		path_redistribution_budget[triple.Chain] += (triple.WCET - min_value)
 	}
 
@@ -539,9 +537,9 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 		for _, node := range path {
 			value, ok := node_map[node]
 			if !ok {
-				node_map[node] = &set.Set{Triple{Node: node, Chain: i, WCET: wcet}}
+				node_map[node] = &set.Set{Triple{Node: node, Chain: i, WCET: int64(wcet)}}
 			} else {
-				value.Insert(Triple{Node: node, Chain: i, WCET: wcet}, set_cmp)
+				value.Insert(Triple{Node: node, Chain: i, WCET: int64(wcet)}, set_cmp)
 			}
 		}
 	}
@@ -550,14 +548,14 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 	for key, value := range node_map {
 
 		// Compute the minimum value
-		var min_value float64 = math.MaxFloat64
+		var min_value int64 = math.MaxInt64
 		value.MapWith(&min_value, get_min)
 
 		// Store minimum value in node WCET
-		debug("Minimum WCET for node %d is %f\n", key, min_value)
+		debug("Minimum WCET for node %d is %d\n", key, min_value)
 		node_wcet_map[key] = min_value
 
-		// Update each path with the differnece between their WCET and min
+		// Update each path with the difference between their WCET and min
 		value.MapWith(min_value, acc_diff)
 	}
 
@@ -566,10 +564,10 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 		unshared_nodes := []int{}
 
 		// Don't redistribute if there isn't anything
-		if path_redistribution_budget[i] == 0.0 {
+		if path_redistribution_budget[i] == 0 {
 			continue
 		} else {
-			debug("Path %d has a redistribution budget of %f\n", i, path_redistribution_budget[i])
+			debug("Path %d has a redistribution budget of %d\n", i, path_redistribution_budget[i])
 		}
 
 		// Otherwise collect unshared nodes on the path
@@ -586,7 +584,7 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 		}
 
 		// Distribute budget across all
-		fractional_budget := path_redistribution_budget[i] / float64(len(unshared_nodes))
+		fractional_budget := int64(float64(path_redistribution_budget[i]) / float64(len(unshared_nodes)))
 
 		for _, n := range unshared_nodes {
 			node_wcet_map[n] = node_wcet_map[n] + fractional_budget
@@ -605,10 +603,10 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 */
 
 // Maps a tuple (benchmark, repeats) to a node based on its WCET
-func map_benchmarks_to_nodes (node_wcet_map map[int]float64, 
-	benchmarks []*benchmark.Benchmark) map[int]benchmark.Work {
-	var node_work_map map[int]benchmark.Work = make(map[int]benchmark.Work)
-	var best_fit_benchmark *benchmark.Benchmark = nil
+func map_benchmarks_to_nodes (node_wcet_map map[int]int64, 
+	benchmarks types.Benchmarks) map[int]types.Work {
+	var node_work_map map[int]types.Work = make(map[int]types.Work)
+	var best_fit_benchmark *types.Benchmark = nil
 
 	// Returns true if candidate divides target better than best when foor'ed
 	is_better_divisor := func (target, candidate, best float64) bool {
@@ -627,37 +625,39 @@ func map_benchmarks_to_nodes (node_wcet_map map[int]float64,
 		for _, benchmark := range benchmarks {
 
 			// Ignore unset entries
-			if benchmark.Runtime_us == 0.0 {
+			if benchmark.Execution_time_us == 0 {
 				continue
 			}
 
 			// Ignore candidate benchmarks whose time is > than WCET
-			if benchmark.Runtime_us > wcet {
+			if benchmark.Execution_time_us > wcet {
 				continue
 			}
 
 			// Automatically select a benchmark if unset
 			if best_fit_benchmark == nil {
-				best_fit_benchmark = benchmark
+				best_fit_benchmark = &benchmark
 				continue
 			}
 
 			// Otherwise compare the difference in remainder, and pick the better one
-			if is_better_divisor(wcet, benchmark.Runtime_us, best_fit_benchmark.Runtime_us) {
-				best_fit_benchmark = benchmark
+			if is_better_divisor(float64(wcet), float64(benchmark.Execution_time_us), 
+				float64(best_fit_benchmark.Execution_time_us)) {
+				best_fit_benchmark = &benchmark
 			}
 		}
 
 		// If none found, then warn
 		if best_fit_benchmark == nil {
-			warn("No benchmark can represent WCET %f for node %d!", wcet, node)
-			node_work_map[node] = benchmark.Work{Benchmark: nil, Iterations: 0}
+			warn("No benchmark can represent WCET %d for node %d!", wcet, node)
+			node_work_map[node] = types.Work{Benchmark_p: nil, Iterations: 0}
 			continue
 		}
 
 		// Enter into map
-		iterations := int(math.Floor(wcet / best_fit_benchmark.Runtime_us))
-		node_work_map[node] = benchmark.Work{Benchmark: best_fit_benchmark, Iterations: iterations}
+		iterations := int(math.Floor(float64(wcet) / float64(best_fit_benchmark.Execution_time_us)))
+		node_work_map[node] = types.Work{Benchmark_p: best_fit_benchmark, 
+			Iterations: iterations}
 	}
 
 	return node_work_map
@@ -723,38 +723,6 @@ func synthesize_node_priorities (chains, priorities []int, g *graph.Graph) map[i
  *                        Benchmarks & Setup Functions                         *
  *******************************************************************************
 */
-
-func get_benchmarks (path string, cfg benchmark.Configuration) ([]*benchmark.Benchmark, error) {
-	var benchmarks   []*benchmark.Benchmark
-	var unevaluated []*benchmark.Benchmark
-	var err         error
-	var os          string = runtime.GOOS
-
-	// Init the benchmark environment
-	check(benchmark.Init_Env(path, cfg), "Initialize benchmark environment")()
-
-	// Init the benchmarks themselves
-	benchmarks, err = benchmark.Init_Benchmarks(cfg)
-	check(err, "Initialize benchmarks")()
-
-	// Locate any unevaluated benchmarks
-	unevaluated, err = benchmark.Get_Unevaluated_Benchmarks(cfg, benchmarks)
-	check(err, "Locate unevaluated benchmarks")()
-
-	// Check if any need to be evaluated
-	if len(unevaluated) > 0 && (os != "linux") {
-		color.Warn.Printf("Benchmark evaluation not available for %s\n" + 
-			"This step will be ignored - but is needed for simulating WCET\n", os)
-		return benchmarks, nil
-	}
-
-	// Evaluate any unevaluated benchmarks
-	for _, b := range unevaluated {
-		check(benchmark.Evaluate_Benchmark("cc", cfg, 10, b), "evaluating %s", b.Name)()
-	}
-
-	return benchmarks, nil
-}
 
 // Returns a list of chains, of varying length
 func get_chains (chain_count, chain_avg_len int, chain_variance float64) []int {
@@ -850,28 +818,16 @@ func set_seed_and_directory (rules types.Rules, s *System) {
 
 func set_benchmarks (s *System) {
 	info("Setting up benchmarks ...\n")
+	var benchmarks types.Benchmarks
 
-	// Setup the configuration for the benchmark folders
-	benchmark_config := benchmark.Configuration{
-		Src:   s.Directory + "/benchmarks/bench/sequential",
-		Stats: s.Directory + "/stats",
-		Bin:   s.Directory + "/bin",
-	}
-
-	// Evaluate + obtain them
-	benchmarks, err := get_benchmarks(s.Directory, benchmark_config)
+	// Read in benchmarks from file 
+	err := benchmarks.ReadFrom(s.Directory + "/benchmarks.json")
 	check(err, "Benchmark configuration")()
 
 	// Set and display them
 	s.Benchmarks = benchmarks
 	for _, b := range benchmarks {
-		debug("%16s\t\t\t%.2f us\t\t\t%.2f%%\t\t\t", b.Name, b.Runtime_us, 
-			b.Uncertainty)
-		if b.Evaluated {
-			debug("Ready\n")
-		} else {
-			debug("No data\n")
-		}
+		debug("%16s\t\t\t%d\n", b.Name, b.Execution_time_us)
 	}
 
 	info("... Ok\n")
@@ -1025,13 +981,14 @@ func set_node_benchmarks (s *System) bool {
 
 	// Check the mapping
 	for node, work_assigned := range node_work_map {
-		if nil == work_assigned.Benchmark {
+		if nil == work_assigned.Benchmark_p {
 			return false
 		} else {
 			debug("Node %d assigned {.Benchmark = %s, .Iterations = %d}\n",
-				node, work_assigned.Benchmark.Name, work_assigned.Iterations)
+				node, work_assigned.Benchmark_p.Name, work_assigned.Iterations)
 			debug("    %f < %f WCET\n", float64(work_assigned.Iterations) * 
-				work_assigned.Benchmark.Runtime_us, s.Node_wcet_map[node])
+				float64(work_assigned.Benchmark_p.Execution_time_us), 
+				float64(s.Node_wcet_map[node]))
 		}
 	}
 
@@ -1312,7 +1269,7 @@ func main () {
 			rules, &system)
 
 		// 5. Map benchmarks to nodes
-		if (set_node_benchmarks(&system)) {
+		if set_node_benchmarks(&system) {
 			break
 		} else {
 			warn("Failed to generate suitable timing ... trying again\n")

@@ -68,7 +68,7 @@ int main (int argc, char const *argv[]) {
 	std::cout << "[" << std::endl;
 	for (int i = 0; i < N_TESTS; i++) {
 		long average_execution_time = trial_function(n_runs, test_functions[i]);
-		std::cout << "{\"" << std::string(test_names[i]) << "\":" << 
+		std::cout << "{\"Name\":\"" << std::string(test_names[i]) << "\", \"Execution_time_us\": " << 
 			std::to_string(average_execution_time) << "}";
 		if (i < (N_TESTS - 1)) {
 			std::cout << ",";
