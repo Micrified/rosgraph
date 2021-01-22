@@ -5,6 +5,7 @@ import (
 	// Standard packages
 	"os"
 	"fmt"
+	"sort"
 	"strings"
 	"errors"
 	"math"
@@ -84,7 +85,7 @@ type System struct {
 	Hyperperiod   int64                   // LCM of periods (convenience)
 	Periods       []float64               // Chain periods (convenience)
 	Node_wcet_map map[int]int64           // Callback comp map
-	Node_work_map map[int]types.Work  // Callback benchmark map
+	Node_work_map map[int]types.Work      // Callback benchmark map
 	Paths         [][]int                 // Chain paths
 	Priorities    []int                   // Chain priorities
 	Node_prio_map map[int]int             // Per-callback priority
@@ -1022,15 +1023,26 @@ func set_graph_synchronisations (rules types.Rules, s *System) {
 func set_node_priorities (rules types.Rules, s *System) {
 	info("Assigning priorities to nodes ...\n")
 
-	// Create default chain priorities
-	priorities := make([]int, rules.Chain_count)
-	priorities[0] = 1
-	for i := 1; i < rules.Chain_count; i++ {
-		priorities[i] = 0
+	// Each chain is assigned its own index
+	chains := make([]int, rules.Chain_count)
+	for i := 0; i < rules.Chain_count; i++ {
+		chains[i] = i
 	}
 
-	for chain, priority := range priorities {
-		debug("Chain %d has priority: %d\n", chain, priority)
+	// Sort the indices by order of increasing period
+	sort.Slice(chains, func(i, j int) bool {
+		return s.Timing[chains[i]].T > s.Timing[chains[j]].T
+	})
+
+	// Build the priority slice
+	priorities := make([]int, rules.Chain_count)
+	for i := 0; i < rules.Chain_count; i++ {
+		priorities[chains[i]] = i
+	}
+
+	// Debug
+	for i, p := range priorities {
+		debug("Chain %d has priority %d\n", i, p)
 	}
 
 	// Apply chain priorities
@@ -1084,17 +1096,33 @@ func generate_ros_application (name string, rules types.Rules, s *System) {
 		}
 	}
 
+	// Compute the number of priority levels needed
+	max_prio, min_prio := s.Priorities[0], s.Priorities[0]
+	for i := 1; i < len(s.Priorities); i++ {
+		if s.Priorities[i] > max_prio {
+			max_prio = s.Priorities[i]
+		}
+		if s.Priorities[i] < min_prio {
+			min_prio = s.Priorities[i]
+		}
+	}
+
+	// One level is reserved for the executor scheduler
+	ppe_levels := (max_prio - min_prio + 1) + 1
+
 	// Prepare meta-data for the RCLCPP representation
 	meta_data := gen.Metadata{
-		Packages:     pkgs,
-		Includes:     incl,
-		MsgType:      "std_msgs::msg::Int64",
-		PPE:          ros_app.PPE,
-		FilterPolicy: "message_filters::sync_policies::ApproximateTime",
-		Libraries:    libs,
-		Headers:      headers,
-		Sources:      srcs,
-		Duration_us:  duration_us,
+		Packages:          pkgs,
+		Includes:          incl,
+		MsgType:           "std_msgs::msg::Int64",
+		PPE:               ros_app.PPE,
+		PPE_levels:        ppe_levels,
+		FilterPolicy:      "message_filters::sync_policies::ApproximateTime",
+		Libraries:         libs,
+		Headers:           headers,
+		Sources:           srcs,
+		Duration_us:       duration_us,
+		Logging_mode:      rules.Logging_mode,
 	}
 
 	// Prepare graph data for informing application generation
