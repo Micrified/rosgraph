@@ -78,7 +78,7 @@ type System struct {
 	Directory     string                  // Working directory
 	Chains        []int                   // Chain (lengths)
 	Colors        []string                // Chain colors
-	Graph         *graph.Graph            // Edge-matrix for nodes
+	Graph         *graph.Graph            // Adjacency-matrix for nodes
 	Benchmarks    types.Benchmarks        // Benchmarks
 	Utilisations  []float64               // Chain utilisations (desired)
 	Timing        []temporal.Temporal     // Chain period + WCET
@@ -216,6 +216,7 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
 	}
 
 	// Compute all current paths for the chains
+	debug("can_merge(): paths check\n")
 	for i := 0; i < len(chains); i++ {
 		map_chain_to_path[i] = ops.PathForChain(i, chains, g)
 		debug("%s\n", ops.Path2String(map_chain_to_path[i]))
@@ -279,152 +280,67 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
  *******************************************************************************
 */
 
-// A container holding an edge outside of the graph context (with from->to info)
-type ExtendedEdge struct {
-	From   int
-	To     int
-	Edge   *ops.Edge
+// Returns true if both edges may be synchronised
+func can_sync (a, b ops.Edge) bool {
+
+	// Synchronisation is only permitted if both edges share (either):
+	// 1. The same base
+	// 2. The same destination
+	// and if they do NOT belong to the same chain
+	return (a.Token.Tag != b.Token.Tag) && ((a.Base == b.Base) || (a.Dest == b.Dest))
 }
 
-// Creates an extended version of the supplied graph by adding synchronization points
-func add_synchronisation_nodes (chain_sync_p float64, chains []int, g *graph.Graph) {
-	map_chain_to_path := make(map[int]([]int))
-	node_edge_map     := make(map[int]([]ExtendedEdge))
+// Returns two slices of paired edges that can be synchronised.
+func get_valid_syncs (g *graph.Graph) ([]ops.Edge, []ops.Edge) {
+	xs, ys := []ops.Edge{}, []ops.Edge{}
 
-	// Closure: Inserts a link into the given path
-	insert_in_path := func (after_node, new_node, tag int) {
-		path := map_chain_to_path[tag]
-		new_path := []int{}
-		for i := 0; i < len(path); i++ {
-			new_path = append(new_path, path[i])
-			if path[i] == after_node {
-				new_path = append(new_path, new_node)
-			}
-		}
-		map_chain_to_path[tag] = new_path
-	}
-
-	// Compute all current paths for the chains
-	for i := 0; i < len(chains); i++ {
-		map_chain_to_path[i] = ops.PathForChain(i, chains, g)
-	}
-
-	// Locate all nodes with two or more incoming edges
-	for i := 0; i < g.Len(); i++ {
-
-		// Check column for incoming edges
-		for j := 0; j < g.Len(); j++ {
-
-			// Extract all incoming edges along column i
-			edges := ops.EdgesAt(j, i, g)
-
-			// If there are no edges, move on
-			if len(edges) == 0 {
-				continue
-			}
-
-			// Build the minimal edge slice
-			extended_edges := []ExtendedEdge{}
-			for _, e := range edges {
-				extended_edges = append(extended_edges, ExtendedEdge{From: j, To: i, Edge: e})
-			}
-
-			// Otherwise append them to the existing slice
-			if slice := node_edge_map[i]; slice != nil {
-				node_edge_map[i] = append(slice, extended_edges...)
-			} else {
-				node_edge_map[i] = extended_edges
-			}
-		} 
-	}
-
-	// Perform a random merge between two of the pairs
-	for node, es := range node_edge_map {
-		debug("Node %d has %d incoming edges\n", node, len(es))
-
-		// Compute the number of attempts possible
-		for len(es) >= 2 {
-			n := len(es)
-			attempts := (n * (n - 1)) / 2
-
-			// Assume no sync was made
-			sync := false
-
-			// Attempt 
-			for i := 0; i < attempts; i++ {
-				var err error = nil
-
-				// Continue if inverse P 
-				if (rand.Float64() >= chain_sync_p) {
-					continue
+	// Closure: Returns the indices of two valid edges to sync. Or -1,-1
+	get_sync_pair := func(edges []ops.Edge) (int, int) {
+		for i := 0; i < len(edges) - 1; i++ {
+			for j := i+1; j < len(edges); j++ {
+				if can_sync(edges[i], edges[j]) {
+					fmt.Printf("It is okay to sync: %d --[%d]--> %d, and %d --[%d]--> %d\n",
+						edges[i].Base, edges[i].Token.Tag, edges[i].Dest,
+					    edges[j].Base, edges[j].Token.Tag, edges[j].Dest)
+					return i, j
 				}
-
-				// Otherwise shuffle
-				rand.Shuffle(n, func(x, y int){ es[x], es[y] = es[y], es[x] })
-
-				// Pick first two
-				a, b := es[0], es[1]
-
-				// Issue a directive
-				debug("Will be placing a sync node between %d-[%d]->%d, and %d-[%d]->%d\n",
-					a.From, a.Edge.Tag, a.To, b.From, b.Edge.Tag, b.To)
-				debug("%s", g.String(ops.Show))
-
-				// Expand the graph with a new node
-				n := ops.ExtendGraphByOne(g)
-
-				debug("After:\n%s", g.String(ops.Show))
-
-				// Update the path with the new node
-				insert_in_path(a.From, (n-1), a.Edge.Tag)
-				insert_in_path(b.From, (n-1), b.Edge.Tag)
-
-				// Move edges to new node
-				err = ops.RewireTo(a.From, a.To, a.Edge.Tag, a.Edge.Num, (n-1), g)
-				check(err, "Unable to rewire edge")()
-				err = ops.RewireTo(b.From, b.To, b.Edge.Tag, b.Edge.Num, (n-1), g)
-				check(err, "Unable to rewire edge")()
-				debug("Set destination ...\n%s", g.String(ops.Show))
-
-				// Wire node to destination
-				err = ops.Wire((n-1), a.To, a.Edge.Tag, a.Edge.Num + 1, a.Edge.Color, g)
-				check(err, "Unable to add edge!")()
-				err = ops.Wire((n-1), b.To, b.Edge.Tag, b.Edge.Num + 1, b.Edge.Color, g)
-				check(err, "Unable to add edge!")()
-
-				debug("With new edges:\n%s", g.String(ops.Show))
-
-				// Remove those two nodes from consideration, as they are already synced
-				sync = true
-				break
 			}
-
-			// If a synchronization was performed, remove both edges involved and resample
-			if sync == false {
-				es = es[2:]
-				continue
-			}
-			break		
 		}
+		return -1, -1
 	}
 
-	// Echo all paths. This is needed since since synchronization nodes alter order
-	for key, value := range map_chain_to_path {
-		fmt.Printf("%d: %s", key, ops.Path2String(value))
-	}
-
-	// For each path, find the edge in the given row, and adjust its number
-	for chain, path := range map_chain_to_path {
-		for i, j := 0, 1; i < (len(path) - 1); i, j = i+1, j+1 {
-			edges := ops.EdgesAt(path[i], path[j], g)
-			for _, e := range edges {
-				if e.Tag == chain {
-					e.Num = i
+	// Closure: Removes the elements at the given indices from the slice
+	slice_without := func (edges []ops.Edge, indices []int) []ops.Edge {
+		without := []ops.Edge{}
+		for i, _ := range edges {
+			exclude := false
+			for _, j := range indices {
+				if i == j {
+					exclude = true
 					break
 				}
 			}
+			if !exclude {
+				without = append(without, edges[i])
+			}
 		}
+		return without
 	}
+
+	// Get all edges
+	edges := ops.AllEdges(g)
+
+	// Find all edges that can be synchronised
+	for len(edges) > 1 {
+		x, y := get_sync_pair(edges)
+		if x == -1 && y == -1 {
+			break
+		}
+		xs = append(xs, edges[x]); ys = append(ys, edges[y])
+		edges = slice_without(edges, []int{x,y})
+	}
+
+	return xs, ys
 }
 
 /*
@@ -1002,15 +918,34 @@ func set_node_benchmarks (s *System) bool {
 
 func set_graph_synchronisations (rules types.Rules, s *System) {
 	info("Extending the graph with synchronisation nodes ...\n")
+	var err error = nil
 
-	// Extend graph with synchronisations
-	add_synchronisation_nodes(rules.Chain_sync_p, s.Chains, s.Graph)
+	// Obtain all valid synchronisations
+	xs, ys := get_valid_syncs(s.Graph)
 
-	// Compute and set the paths (they shouldn't change after this)
-	paths := []([]int){}
-	debug("Updating paths after extending the graph ...\n")
+	// Synchronise by chance on each valid option
+	for i := 0; i < len(xs); i++ {
+		if rand.Float64() <= rules.Chain_sync_p {
+
+			// Extract the edges to sync
+			x, y := xs[i], ys[i]
+
+			// Place a sync node between the edges
+			debug("Syncing (%d --[%d]--> %d) and (%d --[%d]--> %d)\n", 
+				xs[i].Base, xs[i].Token.Tag, xs[i].Dest,
+		    	ys[i].Base, ys[i].Token.Tag, ys[i].Dest)
+			err = ops.Sync(x, y, s.Graph);
+			debug("- Sync complete\n")
+			check(err, "Fault when synchronising edges")()
+		}
+	}
+
+	// Repair all paths
+	debug("Repairing paths ...\n")
+	err, paths := ops.RepairPathTags(s.Chains, s.Graph)
+	debug("Repair complete\n")
+
 	for i := 0; i < rules.Chain_count; i++ {
-		paths = append(paths, ops.PathForChain(i, s.Chains, s.Graph))
 		debug("%d: %s\n", i, ops.Path2String(paths[i]))
 	}
 
@@ -1029,6 +964,8 @@ func set_node_priorities (rules types.Rules, s *System) {
 		chains[i] = i
 	}
 
+	//##################### Rate Monotonic #######################
+
 	// Sort the indices by order of increasing period
 	sort.Slice(chains, func(i, j int) bool {
 		return s.Timing[chains[i]].T > s.Timing[chains[j]].T
@@ -1039,6 +976,13 @@ func set_node_priorities (rules types.Rules, s *System) {
 	for i := 0; i < rules.Chain_count; i++ {
 		priorities[chains[i]] = i
 	}
+
+	// ################### Always chain 0 ############################
+	// priorities := make([]int, rules.Chain_count)
+	// priorities[0] = 1
+	// for i := 1; i < rules.Chain_count; i++ {
+	// 	priorities[i] = 0
+	// }
 
 	// Debug
 	for i, p := range priorities {
