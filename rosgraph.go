@@ -991,7 +991,7 @@ func set_graph_synchronisations (rules types.Rules, s *System) {
 			x, y := xs[i], ys[i]
 
 			// Copy the graph
-			g_copy := s.Graph.Clone()
+			g_copy := ops.CloneGraph(s.Graph)
 
 			// Place a sync node between the edges
 			debug("Syncing (%d --[%d]--> %d) and (%d --[%d]--> %d)\n", 
@@ -1006,12 +1006,15 @@ func set_graph_synchronisations (rules types.Rules, s *System) {
 			if fault {
 				debug("- Sync would cause deadlock -> aborted\n")
 			} else {
-				ops.Sync(x, y, s.Graph)
+				err = ops.Sync(x, y, s.Graph)
+				check(err, "Fault when synchronising edges")()
 				debug("- Sync complete\n")
 			}
 
 		}
 	}
+
+	fmt.Println(s.Graph.String(ops.Show))
 
 	// Repair all paths
 	debug("Repairing paths ...\n")
