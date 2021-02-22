@@ -5,10 +5,11 @@ import (
 	// Standard packages
 	"os"
 	"fmt"
+	"sort"
+	"strings"
 	"errors"
 	"math"
 	"math/rand"
-	"runtime"
 	"encoding/json"
 	"io/ioutil"
 
@@ -16,16 +17,45 @@ import (
 	"temporal"
 	"graph"
 	"set"
-	"benchmark"
 	"colors"
 	"analysis"
 	"ops"
 	"app"
 	"gen"
+	"types"
 
 	// Third party packages
 	"github.com/gookit/color"
 )
+
+// Program usage 
+const g_usage string = `
+---------------------------------- Options ------------------------------------
+    --rules-file=<filename>  : Create a random ROS program within the given
+                               constraints. Then generate the program. The 
+                               rules file should be JSON encoded.
+    --rules-data=<json>      : Create a random ROS program within the given
+                               contraints. Then generate the program. The rules
+                               data should be JSON encoded.
+    --config-file=<filename> : Generate a ROS program exactly as specified. The
+                               config file should be JSON encoded. [TODO]
+    --timing-data=<json>     : When randomly generating a program, assign 
+                               computation time and period to chains according 
+                               to the given timing data. This crudely maps 
+                               computation time, period to nodes (callbacks). 
+                               Only available with --rules-file
+    --verbose=(true|false)   : Defaults to false. When set to true, various 
+                               informative messages are printed
+    --debug=(true|false)     : Defaults to false. When set to true, various
+                               debugging messages are printed
+--------------------------------------------------------------------------------
+`
+
+// Verbosity flag (should default false)
+var g_verbose bool = true
+
+// Debugging flag (should default false)
+var g_debug bool = true
 
 /*
  *******************************************************************************
@@ -33,22 +63,34 @@ import (
  *******************************************************************************
 */
 
-type Config struct {
-	Path               string
-	Chain_count        int
-	Chain_avg_len      int
-	Chain_merge_p      float64
-	Chain_sync_p       float64
-	Chain_variance     float64
-	Util_total         float64
-	Min_period_us      int
-	Max_period_us      int
-	Period_step        float64
-	Hyperperiod_count  int
-	PPE                bool
-	Executor_count     int
-	Random_seed        int
+// Wraps an array mapping chains (index) to temporal data (total WCET, Period)
+type CustomTiming []temporal.Temporal
+
+// Encapsulates an argument, expected as "--<keyword>=<Value>"
+type Argument struct {
+	Keyword             string
+	Value               *string
+	Action              func(string) error
 }
+
+// Encapsulates all data needed for generate
+type System struct {
+	Directory     string                  // Working directory
+	Chains        []int                   // Chain (lengths)
+	Colors        []string                // Chain colors
+	Graph         *graph.Graph            // Adjacency-matrix for nodes
+	Benchmarks    types.Benchmarks        // Benchmarks
+	Utilisations  []float64               // Chain utilisations (desired)
+	Timing        []temporal.Temporal     // Chain period + WCET
+	Hyperperiod   int64                   // LCM of periods (convenience)
+	Periods       []float64               // Chain periods (convenience)
+	Node_wcet_map map[int]int64           // Callback comp map
+	Node_work_map map[int]types.Work      // Callback benchmark map
+	Paths         [][]int                 // Chain paths
+	Priorities    []int                   // Chain priorities
+	Node_prio_map map[int]int             // Per-callback priority
+}
+
 
 /*
  *******************************************************************************
@@ -56,10 +98,25 @@ type Config struct {
  *******************************************************************************
 */
 
+// Only prints if verbose is enabled
+func put (s string, args... interface{}) {
+	if g_verbose {
+		fmt.Printf(s, args...)
+	}
+}
+
+// Only prints if debug is enabled
+func debug (s string, args... interface{}) {
+	if g_debug {
+		fmt.Printf(s, args...)
+	}
+}
+
 func check (err error, s string, args ...interface{}) func() {
 	if nil != err {
 		return func () {
-			color.Error.Printf("Fault: %s\nCause: %s\n", fmt.Sprintf(s, args...), err.Error())
+			color.Error.Printf("Fault: %s\nCause: %s\n", 
+				fmt.Sprintf(s, args...), err.Error())
 			panic(err.Error())
 		}
 	} else {
@@ -72,19 +129,10 @@ func warn (s string, args ...interface{}) {
 }
 
 func info (s string, args ...interface{}) {
-	color.Style{color.FgGreen, color.OpBold}.Printf("%s\n", fmt.Sprintf(s, args...))
-}
-
-func show_config (cfg Config) {
-	color.Blue.Printf("Path:           "); color.Green.Printf("%s\n", cfg.Path)
-	color.Blue.Printf("Chain_count:    "); color.Green.Printf("%d\n", cfg.Chain_count)
-	color.Blue.Printf("Chain_avg_len:  "); color.Green.Printf("%d\n", cfg.Chain_avg_len)
-	color.Blue.Printf("Chain_merge_p:  "); color.Green.Printf("%.2f\n", cfg.Chain_merge_p)
-	color.Blue.Printf("Chain_sync_p:   "); color.Green.Printf("%.2f\n", cfg.Chain_sync_p)
-	color.Blue.Printf("Chain_variance: "); color.Green.Printf("%.2f\n", cfg.Chain_variance)
-	color.Blue.Printf("Util_total:     "); color.Green.Printf("%.2f\n", cfg.Util_total)
-	color.Blue.Printf("Min_period_us:  "); color.Green.Printf("%d\n", cfg.Min_period_us)
-	color.Blue.Printf("Max_period_us:  "); color.Green.Printf("%d\n", cfg.Max_period_us)
+	if g_verbose {
+		color.Style{color.FgGreen, color.OpBold}.Printf("%s\n", 
+			fmt.Sprintf(s, args...))		
+	}
 }
 
 /*
@@ -168,23 +216,24 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
 	}
 
 	// Compute all current paths for the chains
+	debug("can_merge(): paths check\n")
 	for i := 0; i < len(chains); i++ {
 		map_chain_to_path[i] = ops.PathForChain(i, chains, g)
-		fmt.Printf("%s\n", ops.Path2String(map_chain_to_path[i]))
+		debug("%s\n", ops.Path2String(map_chain_to_path[i]))
 	}
 
 	// Condition: Starting elements are special and cannot merge
 	// Solution:  If 'from' and 'to' are not the same type of element - return false
 	start_rows := ops.StartingRows(chains)
 	if contains(from, start_rows) != contains(to, start_rows) {
-		fmt.Printf("Cannot merge %d and %d, as nodes are of incompatible types!\n", from, to)
+		debug("Cannot merge %d and %d, as nodes are of incompatible types!\n", from, to)
 		return false
 	}
 
 	// Condition: The length of a path must not be shortened during a merge
 	// Solution: If 'to' and 'from' have any direct edges between one another - return false
 	if ops.EdgeBetween(from, to, g) {
-		fmt.Printf("Cannot merge %d and %d, as there is a direct edge between them!\n", from, to)
+		debug("Cannot merge %d and %d, as there is a direct edge between them!\n", from, to)
 		return false
 	}
 
@@ -192,7 +241,7 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
 	// Solution:  Replace every path containing 'from' with 'to'. Then check for a loop
 	for chain_id, chain_path := range map_chain_to_path {
 		if cycle_in_paths(chain_id, replace_in_path(from, to, chain_path)) {
-			fmt.Printf("Cannot merge %d->%d as a cycle is formed in chain %d\n", from, to, chain_id)
+			debug("Cannot merge %d->%d as a cycle is formed in chain %d\n", from, to, chain_id)
 			return false
 		}
 	}
@@ -201,25 +250,25 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
 	// Solution: If either node belongs to chain of length 1 - return false
 	to_chain_id, from_chain_id := ops.ChainForRow(to, chains), ops.ChainForRow(from, chains)
 	if chains[to_chain_id] == 1 || chains[from_chain_id] == 1 {
-		fmt.Printf("Cannot merge %d and %d, as one of the chains will not be distinguishable (1)\n", from, to)
+		debug("Cannot merge %d and %d, as one of the chains will not be distinguishable (1)\n", from, to)
 	}
 
 	// Condition: Don't allow chains to be completely merged with one another
-	// Solution: If merging the node means there remains no unique node between the 
+	// Solution: If merging the node means there remains no unique node within the 
 	//           chain being merged into, or the chain merging, from all other other 
 	//           chains - then disallow the merge
 	if unique_paths(from, to) == false {
-		fmt.Printf("Cannot merge %d and %d, as the chains will not be distinguishable (2.1)\n", from, to)
+		debug("Cannot merge %d and %d, as one chain will no longer have any unique node (2.1)\n", from, to)
 		return false		
 	}
 
 	// Condition: A merged element may not be connected to again (no longer 'exists')
 	if ops.Disconnected(from, g) || ops.Disconnected(to, g) {
-		fmt.Printf("Cannot merge %d and %d, as one of them is disconnected (already merged elsewhere)\n", from, to)
+		debug("Cannot merge %d and %d, as one of them is disconnected (already merged elsewhere)\n", from, to)
 		return false
 	}
 
-	fmt.Printf("Merge (%d,%d) allowed!\n", from, to)
+	debug("Merge (%d,%d) allowed!\n", from, to)
 	return true
 }
 
@@ -231,154 +280,126 @@ func can_merge (from, to int, chains []int, g *graph.Graph) bool {
  *******************************************************************************
 */
 
-// A container holding an edge outside of the graph context (with from->to info)
-type ExtendedEdge struct {
-	From   int
-	To     int
-	Edge   *ops.Edge
+// Returns true if both edges may be synchronised
+func can_sync (a, b ops.Edge) bool {
+
+	// Synchronisation is only permitted if both edges share (either):
+	// 1. The same base
+	// 2. The same destination
+	// and if they do NOT belong to the same chain
+	return (a.Token.Tag != b.Token.Tag) && ((a.Base == b.Base) || (a.Dest == b.Dest))
 }
 
-// Creates an extended version of the supplied graph by adding synchronization points
-func add_synchronization_nodes (chain_sync_p float64, chains []int, g *graph.Graph) *graph.Graph {
-	map_chain_to_path := make(map[int]([]int))
-	node_edge_map     := make(map[int]([]ExtendedEdge))
+// Returns two slices of paired edges that can be synchronised.
+func get_valid_syncs (g *graph.Graph) ([]ops.Edge, []ops.Edge) {
+	xs, ys := []ops.Edge{}, []ops.Edge{}
 
-	// Closure: Inserts a link into the given path
-	insert_in_path := func (after_node, new_node, tag int) {
-		path := map_chain_to_path[tag]
-		new_path := []int{}
-		for i := 0; i < len(path); i++ {
-			new_path = append(new_path, path[i])
-			if path[i] == after_node {
-				new_path = append(new_path, new_node)
-			}
-		}
-		map_chain_to_path[tag] = new_path
-	}
-
-	// Compute all current paths for the chains
-	for i := 0; i < len(chains); i++ {
-		map_chain_to_path[i] = ops.PathForChain(i, chains, g)
-	}
-
-	// Locate all nodes with two or more incoming edges
-	for i := 0; i < g.Len(); i++ {
-
-		// Check column for incoming edges
-		for j := 0; j < g.Len(); j++ {
-
-			// Extract all incoming edges along column i
-			edges := ops.EdgesAt(j, i, g)
-
-			// If there are no edges, move on
-			if len(edges) == 0 {
-				continue
-			}
-
-			// Build the minimal edge slice
-			extended_edges := []ExtendedEdge{}
-			for _, e := range edges {
-				extended_edges = append(extended_edges, ExtendedEdge{From: j, To: i, Edge: e})
-			}
-
-			// Otherwise append them to the existing slice
-			if slice := node_edge_map[i]; slice != nil {
-				node_edge_map[i] = append(slice, extended_edges...)
-			} else {
-				node_edge_map[i] = extended_edges
-			}
-		} 
-	}
-
-	// Perform a random merge between two of the pairs
-	for node, es := range node_edge_map {
-		fmt.Printf("Node %d has %d incoming edges\n", node, len(es))
-
-		// Compute the number of attempts possible
-		for len(es) >= 2 {
-			n := len(es)
-			attempts := (n * (n - 1)) / 2
-
-			// Assume no sync was made
-			sync := false
-
-			// Attempt 
-			for i := 0; i < attempts; i++ {
-				var err error = nil
-
-				// Continue if inverse P 
-				if (rand.Float64() >= chain_sync_p) {
-					continue
+	// Closure: Returns the indices of two valid edges to sync. Or -1,-1
+	get_sync_pair := func(edges []ops.Edge) (int, int) {
+		for i := 0; i < len(edges) - 1; i++ {
+			for j := i+1; j < len(edges); j++ {
+				if can_sync(edges[i], edges[j]) {
+					return i, j
 				}
-
-				// Otherwise shuffle
-				rand.Shuffle(n, func(x, y int){ es[x], es[y] = es[y], es[x] })
-
-				// Pick first two
-				a, b := es[0], es[1]
-
-				// Issue a directive
-				fmt.Printf("Will be placing a sync node between %d-[%d]->%d, and %d-[%d]->%d\n",
-					a.From, a.Edge.Tag, a.To, b.From, b.Edge.Tag, b.To)
-				fmt.Printf("%s", g.String(ops.Show))
-
-				// Expand the graph with a new node
-				n := ops.ExtendGraphByOne(g)
-
-				fmt.Printf("After:\n%s", g.String(ops.Show))
-
-				// Update the path with the new node
-				insert_in_path(a.From, (n-1), a.Edge.Tag)
-				insert_in_path(b.From, (n-1), b.Edge.Tag)
-
-				// Move edges to new node
-				err = ops.RewireTo(a.From, a.To, a.Edge.Tag, a.Edge.Num, (n-1), g)
-				check(err, "Unable to rewire edge")()
-				err = ops.RewireTo(b.From, b.To, b.Edge.Tag, b.Edge.Num, (n-1), g)
-				check(err, "Unable to rewire edge")()
-				fmt.Printf("Set destination ...\n%s", g.String(ops.Show))
-
-				// Wire node to destination
-				err = ops.Wire((n-1), a.To, a.Edge.Tag, a.Edge.Num + 1, a.Edge.Color, g)
-				check(err, "Unable to add edge!")()
-				err = ops.Wire((n-1), b.To, b.Edge.Tag, b.Edge.Num + 1, b.Edge.Color, g)
-				check(err, "Unable to add edge!")()
-
-				fmt.Printf("With new edges:\n%s", g.String(ops.Show))
-
-				// Remove those two nodes from consideration, as they are already synced
-				sync = true
-				break
 			}
-
-			// If a synchronization was performed, remove both edges involved and resample
-			if sync == false {
-				es = es[2:]
-				continue
-			}
-			break		
 		}
+		return -1, -1
 	}
 
-	// Echo all paths. This is needed since since synchronization nodes alter order
-	for key, value := range map_chain_to_path {
-		fmt.Printf("%d: %s", key, ops.Path2String(value))
-	}
-
-	// For each path, find the edge in the given row, and adjust its number
-	for chain, path := range map_chain_to_path {
-		for i, j := 0, 1; i < (len(path) - 1); i, j = i+1, j+1 {
-			edges := ops.EdgesAt(path[i], path[j], g)
-			for _, e := range edges {
-				if e.Tag == chain {
-					e.Num = i
+	// Closure: Removes the elements at the given indices from the slice
+	slice_without := func (edges []ops.Edge, indices []int) []ops.Edge {
+		without := []ops.Edge{}
+		for i, _ := range edges {
+			exclude := false
+			for _, j := range indices {
+				if i == j {
+					exclude = true
 					break
 				}
 			}
+			if !exclude {
+				without = append(without, edges[i])
+			}
+		}
+		return without
+	}
+
+	// Get all edges
+	edges := ops.AllEdges(g)
+
+	// Find all edges that can be synchronised
+	for len(edges) > 1 {
+		x, y := get_sync_pair(edges)
+		if x == -1 && y == -1 {
+			break
+		}
+		xs = append(xs, edges[x]); ys = append(ys, edges[y])
+		edges = slice_without(edges, []int{x,y})
+	}
+
+	return xs, ys
+}
+
+// Returns true if there exists a deadlock in the graph
+func deadlock_detect (chains []int, g *graph.Graph) (bool, error) {
+
+	// Compute max node ID
+	node_count := 0
+	for i := 0; i < len(chains); i++ {
+		node_count += chains[i]
+	}
+
+	// Closure: Returns true if node is a sync node
+	is_sync := func (id int) bool {
+		return id >= node_count
+	}
+
+	// Create dependency buckets for each sync node
+	sync_dependencies := make([][]int, g.Len() - node_count)
+
+	// Locate dependencies for each sync node
+	for sync_node_id := node_count; sync_node_id < g.Len(); sync_node_id++ {
+
+		// Locate both dependencies
+		branches := ops.TokensForColumn(sync_node_id, g)
+
+		// Verify exactly two branches
+		if len(branches) != 2 {
+			reason := "Sync node does not have exactly two incoming edges"
+			return false, errors.New(reason)
+		}
+
+		// Add branch dependencies
+		for _, t := range branches {
+
+			backtrace := ops.Backtrace(t.Tag, sync_node_id, is_sync, g)
+
+			// Add to dependencies
+			sync_dependencies[sync_node_id - node_count] = 
+				append(sync_dependencies[sync_node_id - node_count], backtrace...)
+		}
+
+	}
+
+	// Detect cycles in dependencies
+	for i := 0; i < len(sync_dependencies); i++ {
+		fmt.Printf("Sync node %d depends on: ", node_count + i)
+		for j := 0; j < len(sync_dependencies[i]); j++ {
+			fmt.Printf("%d ", sync_dependencies[i][j])
+		}
+		fmt.Printf("\n")
+	}
+
+	// Detect cycles in dependencies
+	for i := 0; i < len(sync_dependencies); i++ {
+		start := node_count + i
+		if ops.IsCycle(node_count, start, start, []int{}, sync_dependencies) {
+			fmt.Printf("There is a deadlock in sync node %d dependencies!\n", start)
+			return true, nil
 		}
 	}
 
-	return nil
+	return false, nil
 }
 
 /*
@@ -424,7 +445,7 @@ func resolve_shared_timers (ts []temporal.Temporal, us []float64, chains []int,
 
 		// Debug
 		if len(sharing) > 1 {
-			fmt.Printf("More than one chain start from node %d!\n", timer)
+			debug("More than one chain start from node %d!\n", timer)
 		}
 
 		// Update period and computation of all chains sharing the timer
@@ -446,15 +467,15 @@ func resolve_shared_timers (ts []temporal.Temporal, us []float64, chains []int,
 type Triple struct {
 	Node    int
 	Chain   int
-	WCET    float64
+	WCET    int64
 }
 
 // Assigns WCET to all nodes within chains. Resolves clashes
-func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) map[int]float64 {
+func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) map[int]int64 {
 	var paths [][]int = make([][]int, len(chains))
 	var node_map map[int]*set.Set = make(map[int]*set.Set)
-	var node_wcet_map map[int]float64 = make(map[int]float64)
-	var path_redistribution_budget []float64 = make([]float64, len(chains))
+	var node_wcet_map map[int]int64 = make(map[int]int64)
+	var path_redistribution_budget []int64 = make([]int64, len(chains))
 
 	// Closure: Comparator for sets
 	set_cmp := func (x, y interface{}) bool {
@@ -462,9 +483,9 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 		return (a.Node == b.Node) && (a.Chain == b.Chain)
 	}
 
-	// Closure: Computes minimum over a set
+	// Closure: Sets minimum between a given minimum candidate triple WCET
 	get_min := func (x, y interface{}) {
-		min_int_p, triple := x.(*float64), y.(Triple)
+		min_int_p, triple := x.(*int64), y.(Triple)
 		if (triple.WCET < *min_int_p) {
 			*min_int_p = triple.WCET
 		}
@@ -472,8 +493,8 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 
 	// Closure: Computes difference in WCET, places in path budget
 	acc_diff := func (x, y interface{}) {
-		min_value, triple := x.(float64), y.(Triple)
-		fmt.Printf("Redistribution[%d] = %f - %f\n", triple.Chain, triple.WCET, min_value)
+		min_value, triple := x.(int64), y.(Triple)
+		debug("Redistribution[%d] = %d - %d\n", triple.Chain, triple.WCET, min_value)
 		path_redistribution_budget[triple.Chain] += (triple.WCET - min_value)
 	}
 
@@ -488,13 +509,13 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 	// 3. In the end, we resolve the WCET by picking the minimum
 	for i, path := range paths {
 		wcet := ts[i].C / float64(len(path))
-		fmt.Printf("The WCET for each callback along path %d is (%f / %d) = %f\n", i, ts[i].C, len(path), wcet)
+		debug("The WCET for each callback along path %d is (%f / %d) = %f\n", i, ts[i].C, len(path), wcet)
 		for _, node := range path {
 			value, ok := node_map[node]
 			if !ok {
-				node_map[node] = &set.Set{Triple{Node: node, Chain: i, WCET: wcet}}
+				node_map[node] = &set.Set{Triple{Node: node, Chain: i, WCET: int64(wcet)}}
 			} else {
-				value.Insert(Triple{Node: node, Chain: i, WCET: wcet}, set_cmp)
+				value.Insert(Triple{Node: node, Chain: i, WCET: int64(wcet)}, set_cmp)
 			}
 		}
 	}
@@ -503,14 +524,14 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 	for key, value := range node_map {
 
 		// Compute the minimum value
-		var min_value float64 = math.MaxFloat64
+		var min_value int64 = math.MaxInt64
 		value.MapWith(&min_value, get_min)
 
 		// Store minimum value in node WCET
-		fmt.Printf("Minimum WCET for node %d is %f\n", key, min_value)
+		debug("Minimum WCET for node %d is %d\n", key, min_value)
 		node_wcet_map[key] = min_value
 
-		// Update each path with the differnece between their WCET and min
+		// Update each path with the difference between their WCET and min
 		value.MapWith(min_value, acc_diff)
 	}
 
@@ -519,10 +540,10 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 		unshared_nodes := []int{}
 
 		// Don't redistribute if there isn't anything
-		if path_redistribution_budget[i] == 0.0 {
+		if path_redistribution_budget[i] == 0 {
 			continue
 		} else {
-			fmt.Printf("Path %d has a redistribution budget of %f\n", i, path_redistribution_budget[i])
+			debug("Path %d has a redistribution budget of %d\n", i, path_redistribution_budget[i])
 		}
 
 		// Otherwise collect unshared nodes on the path
@@ -539,7 +560,7 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 		}
 
 		// Distribute budget across all
-		fractional_budget := path_redistribution_budget[i] / float64(len(unshared_nodes))
+		fractional_budget := int64(float64(path_redistribution_budget[i]) / float64(len(unshared_nodes)))
 
 		for _, n := range unshared_nodes {
 			node_wcet_map[n] = node_wcet_map[n] + fractional_budget
@@ -558,10 +579,10 @@ func map_wcet_to_nodes (ts []temporal.Temporal, chains []int, g *graph.Graph) ma
 */
 
 // Maps a tuple (benchmark, repeats) to a node based on its WCET
-func map_benchmarks_to_nodes (node_wcet_map map[int]float64, 
-	benchmarks []*benchmark.Benchmark) map[int]benchmark.Work {
-	var node_work_map map[int]benchmark.Work = make(map[int]benchmark.Work)
-	var best_fit_benchmark *benchmark.Benchmark = nil
+func map_benchmarks_to_nodes (node_wcet_map map[int]int64, 
+	benchmarks types.Benchmarks) map[int]types.Work {
+	var node_work_map map[int]types.Work = make(map[int]types.Work)
+	var best_fit_benchmark *types.Benchmark = nil
 
 	// Returns true if candidate divides target better than best when foor'ed
 	is_better_divisor := func (target, candidate, best float64) bool {
@@ -580,37 +601,39 @@ func map_benchmarks_to_nodes (node_wcet_map map[int]float64,
 		for _, benchmark := range benchmarks {
 
 			// Ignore unset entries
-			if benchmark.Runtime_us == 0.0 {
+			if benchmark.Execution_time_us == 0 {
 				continue
 			}
 
 			// Ignore candidate benchmarks whose time is > than WCET
-			if benchmark.Runtime_us > wcet {
+			if benchmark.Execution_time_us > wcet {
 				continue
 			}
 
 			// Automatically select a benchmark if unset
 			if best_fit_benchmark == nil {
-				best_fit_benchmark = benchmark
+				best_fit_benchmark = &benchmark
 				continue
 			}
 
 			// Otherwise compare the difference in remainder, and pick the better one
-			if is_better_divisor(wcet, benchmark.Runtime_us, best_fit_benchmark.Runtime_us) {
-				best_fit_benchmark = benchmark
+			if is_better_divisor(float64(wcet), float64(benchmark.Execution_time_us), 
+				float64(best_fit_benchmark.Execution_time_us)) {
+				best_fit_benchmark = &benchmark
 			}
 		}
 
 		// If none found, then warn
 		if best_fit_benchmark == nil {
-			warn("No benchmark can represent WCET %f for node %d!", wcet, node)
-			node_work_map[node] = benchmark.Work{Benchmark: nil, Iterations: 0}
+			warn("No benchmark can represent WCET %d for node %d!", wcet, node)
+			node_work_map[node] = types.Work{Benchmark_p: nil, Iterations: 0}
 			continue
 		}
 
 		// Enter into map
-		iterations := int(math.Floor(wcet / best_fit_benchmark.Runtime_us))
-		node_work_map[node] = benchmark.Work{Benchmark: best_fit_benchmark, Iterations: iterations}
+		iterations := int(math.Floor(float64(wcet) / float64(best_fit_benchmark.Execution_time_us)))
+		node_work_map[node] = types.Work{Benchmark_p: best_fit_benchmark, 
+			Iterations: iterations}
 	}
 
 	return node_work_map
@@ -674,41 +697,9 @@ func synthesize_node_priorities (chains, priorities []int, g *graph.Graph) map[i
 
 /*
  *******************************************************************************
- *                                    Main                                     *
+ *                        Benchmarks & Setup Functions                         *
  *******************************************************************************
 */
-
-func get_benchmarks (cfg benchmark.Configuration) ([]*benchmark.Benchmark, error) {
-	var benchmarks   []*benchmark.Benchmark
-	var unevaluated []*benchmark.Benchmark
-	var err         error
-	var os          string = runtime.GOOS
-
-	// Init the benchmark environment
-	check(benchmark.Init_Env(cfg), "Initialize benchmark environment")()
-
-	// Init the benchmarks themselves
-	benchmarks, err = benchmark.Init_Benchmarks(cfg)
-	check(err, "Initialize benchmarks")()
-
-	// Locate any unevaluated benchmarks
-	unevaluated, err = benchmark.Get_Unevaluated_Benchmarks(cfg, benchmarks)
-	check(err, "Locate unevaluated benchmarks")()
-
-	// Check if any need to be evaluated
-	if len(unevaluated) > 0 && (os != "linux") {
-		color.Warn.Printf("Benchmark evaluation not available for %s\n" + 
-			"This step will be ignored - but is needed for simulating WCET\n", os)
-		return benchmarks, nil
-	}
-
-	// Evaluate any unevaluated benchmarks
-	for _, b := range unevaluated {
-		check(benchmark.Evaluate_Benchmark("cc", cfg, 10, b), "evaluating %s", b.Name)()
-	}
-
-	return benchmarks, nil
-}
 
 // Returns a list of chains, of varying length
 func get_chains (chain_count, chain_avg_len int, chain_variance float64) []int {
@@ -789,195 +780,571 @@ func get_random_merges (chains []int, merge_p float64) ([]int, []int) {
 	return from, to
 }
 
-func main () {
-	var benchmarks []*benchmark.Benchmark
-	var err error
-	var input Config
-	var data []byte
+/*
+ *******************************************************************************
+ *                           Program Stage Functions                           *
+ *******************************************************************************
+*/
 
-	// Expect input as a JSON file
-	if len(os.Args) != 2 {
-		fmt.Printf("%s <config.json>\n", os.Args[0])
-		return
-	}
+func set_seed_and_directory (rules types.Rules, s *System) {
+	info("Seeding PRNG + Setting directory ...\n")
+	rand.Seed(int64(rules.Random_seed))
+	s.Directory = rules.Directory
+	info("...OK\n")
+}
 
-	// Attempt to open file
-	if data, err = ioutil.ReadFile(os.Args[1]); nil != err {
-		check(err, fmt.Sprintf("Unable to open %s", os.Args[1]))()
-		return
-	}
+func set_benchmarks (s *System) {
+	info("Setting up benchmarks ...\n")
+	var benchmarks types.Benchmarks
 
-	// Attempt to decode argument
-	err = json.Unmarshal(data, &input)
-	check(err, "Unable to unmarshal the input argument!")()
-	show_config(input)
+	// Read in benchmarks from file 
+	err := benchmarks.ReadFrom(s.Directory + "/benchmarks.json")
+	check(err, "Benchmark configuration")()
 
-	// Apply random seed
-	fmt.Printf("Seed = %d\n", input.Random_seed)
-	rand.Seed(int64(input.Random_seed))
-
-	// Extract path
-	path := input.Path
-	fmt.Printf("path = %s\n", input.Path)
-
-	// Get the benchmarks
-	bench_cfg := benchmark.Configuration{Src: path + "/benchmarks/bench/sequential", Stats: "stats", Bin: "bin"}
-	benchmarks, err = get_benchmarks(bench_cfg)
-
-	// Print benchmarks
+	// Set and display them
+	s.Benchmarks = benchmarks
 	for _, b := range benchmarks {
-		fmt.Printf("%16s\t\t\t%.2f us\t\t\t%.2f%%\t\t\t", b.Name, b.Runtime_us, b.Uncertainty)
-		if b.Evaluated {
-			color.Black.Printf("Ready\n")
-		} else {
-			color.Magenta.Printf("No data\n")
-		}
+		debug("%16s\t\t\t%d\n", b.Name, b.Execution_time_us)
 	}
 
-	// Generate the chains
-	// TODO: Accept a graph from input
-	chains := get_chains(input.Chain_count, input.Chain_avg_len, input.Chain_variance)
-	colors := get_colors(input.Chain_count)
-	for i, c := range chains {
-		fmt.Printf("%d. %d\n", i, c)
+	info("... Ok\n")
+}
+
+func set_random_graph (rules types.Rules, s *System) {
+	info("Setting up the random graph ...")
+
+	// Create a number of chains, and pick colors for them
+	s.Chains = get_chains(rules.Chain_count, rules.Chain_avg_len, 
+		rules.Chain_variance)
+	s.Colors = get_colors(rules.Chain_count)
+	for i, c := range s.Chains {
+		debug("Chain %d has length %d\n", i, c)
 	}
 
-	// Create the graph
-	g := ops.InitGraph(chains, colors)
-
-	// DEBUG: Print paths
-	fmt.Printf("%s", g.String(ops.Show))
-	for i := 0; i < input.Chain_count; i++ {
-		fmt.Printf("%s\n", ops.Path2String(ops.PathForChain(i, chains, g)))
-	}
+	// Create an edge-graph for the chains
+	s.Graph = ops.InitGraph(s.Chains, s.Colors)
 
 	// Perform random merges
-	from, to := get_random_merges(chains, input.Chain_merge_p)
+	from, to := get_random_merges(s.Chains, rules.Chain_merge_p)
 	for i := 0; i < len(from); i++ {
-		if can_merge(from[i], to[i], chains, g) {
-			info("Approved: %d -> %d\n", from[i], to[i])
-			ops.Merge(from[i], to[i], g)
+		if can_merge(from[i], to[i], s.Chains, s.Graph) {
+			debug("Approved: %d -> %d\n", from[i], to[i])
+			ops.Merge(from[i], to[i], s.Graph)
 		} else {
-			warn("Rejected: %d -> %d\n", from[i], to[i])
+			debug("Rejected: %d -> %d\n", from[i], to[i])
 		}
 	}
 
-	// Assign timing information to graph
-	us := temporal.Uunifast(1.0, len(chains))
-	ts, err := temporal.Make_Temporal_Data(temporal.Range{Min: float64(input.Min_period_us), 
-		Max: float64(input.Max_period_us)},input.Period_step, us)
-	info("Chains have a period in range [%d,%d]us, with a step of %fus", input.Min_period_us,
-		input.Max_period_us, input.Period_step)
-	check(err, "Unable to generate timing data")()
-	for i := 0; i < len(ts); i++ {
-		fmt.Printf("Chain %d gets (U = %f, T = %f, C = %f)\n", i, us[i], ts[i].T, ts[i].C)
-	}
-	hyperperiod, err := temporal.Integral_Hyperperiod(ts)
-	check(err, "Unable to determine hyperperiod")()
-	info("Hyperperiod: %dus", hyperperiod)
+	info("... OK\n")
+}
 
-	// TODO: Some chains may begin with the same timer, meaning their period is
-	// not independent and thus their computation time needs to be fixed to match
-	// utilization!
-	// 1. Determine which chains are sharing timers
-	// 2. Pick one
-	// 3. Update the temporal data
-	ts = resolve_shared_timers(ts, us, chains, g)
-	fmt.Printf("Printing chains again after resolving conflicts...\n")
+func set_utilisation_and_timing (custom_timing CustomTiming,
+	is_custom_timing bool, rules types.Rules, s *System) {
+	info("Setting utilisation and timing ...\n")
+
+	if is_custom_timing {
+
+		// Validate custom timing
+		if len(custom_timing) != len(s.Chains) {
+			reason := fmt.Sprintf("Custom timing length (%d) mismatch (%d chains)",
+				len(custom_timing), len(s.Chains))
+			check(errors.New(reason), "Custom timing check")()
+		}
+
+		// Warn user that infeasible utilisation cannot be re-sampled
+		warn("Resampling bad utilisation not available with custom timing")
+
+		// Use provided timing to compute utilisation
+		utilisations, u_sum := make([]float64, len(s.Chains)), 0.0
+		for chain_id, chain_timing := range custom_timing {
+			utilisations[chain_id] = chain_timing.C / chain_timing.T
+			u_sum += utilisations[chain_id]
+		}
+
+		// Check that the given utilisation is under the rules threshold (with tolerance)
+		if math.Abs(u_sum - rules.Util_total) > 0.001 {
+			reason := fmt.Sprintf("Utilisation under custom timing exceeds threshold (%f > %f)",
+				u_sum, rules.Util_total)
+			check(errors.New(reason), "Utilisation check")()
+		}
+
+		// Assign utilisations
+		s.Utilisations = utilisations
+
+	} else {
+
+		// Get a random utilisation breakdown for each chain
+		s.Utilisations = temporal.Uunifast(rules.Util_total, len(s.Chains))		
+	}
+
+	// Map utilisation to a period of certain range, and computation time
+	if is_custom_timing {
+
+		// Assign the custom timing directly
+		s.Timing = custom_timing
+
+	} else {
+
+		// Derive timing data from utilisations
+		min_us, max_us := rules.Min_period_us, rules.Max_period_us
+		timing, err := temporal.Make_Temporal_Data(
+			temporal.Range{Min: float64(min_us), Max: float64(max_us)},
+			rules.Period_step_us, s.Utilisations)
+		check(err, "Unable to generate timing data")()
+
+		// Otherwise assign the timing data
+		s.Timing = timing
+		debug("Period range: [%d,%d]us\n", min_us, max_us)
+		debug("Step:         %fus\n", rules.Period_step_us)		
+	}
+
+
+	// Print timing data (initial)
+	debug("Initial timing data ...\n")
+	for i := 0; i < len(s.Timing); i++ {
+		debug("Chain %d: (U = %f, T = %f, C = %f)\n", i, s.Utilisations[i],
+			s.Timing[i].T, s.Timing[i].C)
+	}
+
+	// Resolve shared timers
+	// [About] This occurs when chains begin with the same timer,
+	// meaning their period is not independent. Thus the computation time
+	// needs to be fixed to match utilisation. It works as follows: 
+	// 1. Determine which chains share timeres
+	// 2. Pick one to keep
+	// 3. Update the timing data of all chains after redistributing
+	debug("Resolving shared timers ...")
+	s.Timing = resolve_shared_timers(s.Timing, s.Utilisations, s.Chains, s.Graph)
+
+	// Build and set the periods convenience slice
 	periods := []float64{}
-	for i := 0; i < len(ts); i++ {
-		fmt.Printf("Chain %d gets (T = %f, C = %f)\n", i, ts[i].T, ts[i].C)
-		periods = append(periods, ts[i].T)
+	for i := 0; i < len(s.Timing); i++ {
+		periods = append(periods, s.Timing[i].T)
+	}
+	s.Periods = periods
+
+	// Build and set a mapping of WCET to each node
+	s.Node_wcet_map = map_wcet_to_nodes(s.Timing, s.Chains, s.Graph)
+
+	// Print timing data (final)
+	debug("Final timing data ...\n")
+	for i := 0; i < len(s.Timing); i++ {
+		debug("Chain %d: (U = %f, T = %f, C = %f)\n", i, s.Utilisations[i],
+			s.Timing[i].T, s.Timing[i].C)
 	}
 
-	// Map computation time to nodes
-	node_wcet_map := map_wcet_to_nodes(ts, chains, g)
-	for key, value := range node_wcet_map {
-		fmt.Printf("Node %d WCET = %f\n", key, value)
+	// Compute and set hyperperiod
+	hyperperiod, err := temporal.Integral_Hyperperiod(s.Timing)
+	check(err, "Unable to compute hyperperiod")()
+
+	// Hyperperiod tends to overflow. So nullify it if negative
+	// Or if converting it to NS would overflow (> 1E15)
+	if hyperperiod < 0 || hyperperiod > (1 * 1000000000000000) {
+		hyperperiod = 0
+		warn("Hyperperiod overflow, or risk of overflow: Disabling hyperperiod!")
 	}
 
-	// Assign benchmark to each node
-	node_work_map := map_benchmarks_to_nodes(node_wcet_map, benchmarks)
-	for node, work_assign := range node_work_map {
-		if work_assign.Benchmark == nil {
-			fmt.Printf("Node %d has been assigned nothing, since no benchmark suits it...\n", node)
+	s.Hyperperiod = hyperperiod
+	debug("Hyperperiod:    %dus\n", hyperperiod)
+
+	info("... OK\n")
+}
+
+func set_node_benchmarks (s *System) bool {
+	info("Assigning benchmarks to nodes ...\n")
+
+	// Obtain the mapping
+	node_work_map := map_benchmarks_to_nodes(s.Node_wcet_map, s.Benchmarks)
+
+	// Check the mapping
+	for node, work_assigned := range node_work_map {
+		if nil == work_assigned.Benchmark_p {
+			return false
 		} else {
-			fmt.Printf("Node %d has been assigned {.Benchmark = %s, .Iterations = %d} for %f <= %f WCET\n", 
-				node, work_assign.Benchmark.Name, work_assign.Iterations, 
-				float64(work_assign.Iterations) * work_assign.Benchmark.Runtime_us, node_wcet_map[node])			
+			debug("Node %d assigned {.Benchmark = %s, .Iterations = %d}\n",
+				node, work_assigned.Benchmark_p.Name, work_assigned.Iterations)
+			debug("    %f < %f WCET\n", float64(work_assigned.Iterations) * 
+				float64(work_assigned.Benchmark_p.Execution_time_us), 
+				float64(s.Node_wcet_map[node]))
+		}
+	}
+
+	// Assign the mapping
+	s.Node_work_map = node_work_map
+
+	info("... OK\n")
+	return true
+}
+
+func set_graph_synchronisations (rules types.Rules, s *System) {
+	info("Extending the graph with synchronisation nodes ...\n")
+	var err error = nil
+
+	// Obtain all valid synchronisations
+	xs, ys := get_valid_syncs(s.Graph)
+
+	// Synchronise by chance on each valid option
+	for i := 0; i < len(xs); i++ {
+		if rand.Float64() <= rules.Chain_sync_p {
+
+			// Extract the edges to sync
+			x, y := xs[i], ys[i]
+
+			// Copy the graph
+			g_copy := s.Graph.Clone()
+
+			// Place a sync node between the edges
+			debug("Syncing (%d --[%d]--> %d) and (%d --[%d]--> %d)\n", 
+				xs[i].Base, xs[i].Token.Tag, xs[i].Dest,
+		    	ys[i].Base, ys[i].Token.Tag, ys[i].Dest)
+			err = ops.Sync(x, y, g_copy);
+			check(err, "Fault when synchronising edges")()
+
+			// Check for deadlocks
+			fault, err := deadlock_detect(s.Chains, g_copy)
+			check(err, "Fault in deadlock detection")()
+			if fault {
+				debug("- Sync would cause deadlock -> aborted\n")
+			} else {
+				ops.Sync(x, y, s.Graph)
+				debug("- Sync complete\n")
 			}
+
+		}
 	}
 
-	// Extend the graph with synchronizations (which implicity lengthens the chain)
-	g_sync := add_synchronization_nodes(input.Chain_sync_p, chains, g)
-	fmt.Println(g_sync)
+	// Repair all paths
+	debug("Repairing paths ...\n")
+	err, paths := ops.RepairPathTags(s.Chains, s.Graph)
+	debug("Repair complete\n")
 
-	// Print paths
-	paths := []([]int){}
-	fmt.Println("UPDATED PATHS AFTER SYNC")
-	for i := 0; i < input.Chain_count; i++ {
-		paths = append(paths, ops.PathForChain(i, chains, g))
-		fmt.Printf("%s\n", ops.Path2String(paths[i]))
+	for i := 0; i < rules.Chain_count; i++ {
+		debug("%d: %s\n", i, ops.Path2String(paths[i]))
 	}
 
-	// Synthesize prioritites for the graph
-	// TODO: Make this something that can be changed via input
-	// Right now, only chain zero is prioritized
-	priorities := make([]int, input.Chain_count)
-	priorities[0] = 1;
-	for i := 1; i < input.Chain_count; i++ {
-		priorities[i] = 0
-		fmt.Printf("Chain %d has priority %d\n", i, i)
-	}
-	node_prio_map := synthesize_node_priorities(chains, priorities, g)
-	for key, value := range node_prio_map {
-		fmt.Printf("Node %d has prio %d\n", key, value)
-	}
+	// Update paths
+	s.Paths = paths
 
-	// Convert the graph into a ROS-like representation
-	app := app.Init_Application("beta", input.PPE, input.Executor_count)
-	app.From_Graph(chains, paths, periods, node_wcet_map, node_work_map, node_prio_map, g)
+	info("... OK\n")
+}
 
-	// Metadata for application generation
-	meta := gen.Metadata {
-		Packages: []string{"std_msgs", "message_filters"},
-		Includes: []string{"std_msgs/msg/int64.hpp", "message_filters/subscriber.h", "message_filters/sync_policies/approximate_time.h",
-							app.Name + "/" + "tacle_benchmarks.h", app.Name + "/" + "roslog.h"},
-		MsgType:        "std_msgs::msg::Int64",
-		PPE:            app.PPE,
-		FilterPolicy:   "message_filters::sync_policies::ApproximateTime",
-		Libraries:      []string{path + "/lib/libtacle.a"},
-		Headers:        []string{path + "/lib/tacle_benchmarks.h", path + "/include/roslog.h"},
-		Sources:        []string{path + "/src/roslog.cpp"},
-		Duration_us:    int64(input.Hyperperiod_count) * hyperperiod,
+func set_node_priorities (rules types.Rules, s *System) {
+	info("Assigning priorities to nodes ...\n")
+
+	// Each chain is assigned its own index
+	chains := make([]int, rules.Chain_count)
+	for i := 0; i < rules.Chain_count; i++ {
+		chains[i] = i
 	}
 
-	// Graphdata for application generation
+	//##################### Rate Monotonic #######################
+
+	// Sort the indices by order of increasing period
+	sort.Slice(chains, func(i, j int) bool {
+		return s.Timing[chains[i]].T > s.Timing[chains[j]].T
+	})
+
+	// Build the priority slice
+	priorities := make([]int, rules.Chain_count)
+	for i := 0; i < rules.Chain_count; i++ {
+		priorities[chains[i]] = i
+	}
+
+	// ################### Always chain 0 ############################
+	// priorities := make([]int, rules.Chain_count)
+	// priorities[0] = 1
+	// for i := 1; i < rules.Chain_count; i++ {
+	// 	priorities[i] = 0
+	// }
+
+	// Debug
+	for i, p := range priorities {
+		debug("Chain %d has priority %d\n", i, p)
+	}
+
+	// Apply chain priorities
+	s.Priorities = priorities
+
+	// Apply priority synthesis
+	debug("Synthesizing priorities ...\n")
+	node_prio_map := synthesize_node_priorities(s.Chains, s.Priorities, s.Graph)
+	for node_id, node_prio := range node_prio_map {
+		debug("Node %d has priority %d\n", node_id, node_prio)
+	}
+
+	// Set the map
+	s.Node_prio_map = node_prio_map
+
+	info("... OK\n")
+}
+
+func generate_ros_application (name string, rules types.Rules, s *System) {
+	info("Generating the ROS application ...\n")
+
+	// Create an application from the graph
+	ros_app := app.Init_Application(name, rules.PPE, rules.Executor_count)
+	ros_app.From_Graph(s.Chains, s.Paths, s.Periods, s.Node_wcet_map, 
+		s.Node_work_map, s.Node_prio_map, s.Graph)
+
+	// RCLCPP Metadata
+	pkgs := []string{"std_msgs", "message_filters"}
+	incl := []string{"std_msgs/msg/int64.hpp",
+		"message_filters/subscriber.h",
+		"message_filters/sync_policies/approximate_time.h",
+		name + "/" + "tacle_benchmarks.h",
+	    name + "/" + "roslog.h",
+	}
+	libs := []string{
+		s.Directory + "/lib/libtacle.a",
+	}
+	headers := []string{
+		s.Directory + "/lib/tacle_benchmarks.h",
+		s.Directory + "/include/roslog.h",
+	}
+	srcs := []string{
+		s.Directory + "/src/roslog.cpp",
+	}
+
+	// Compute the duration (if maximum not -1, then apply)
+	duration_us := int64(rules.Hyperperiod_count) * s.Hyperperiod
+	if rules.Max_duration_us != -1 {
+		if int64(rules.Max_duration_us) < duration_us {
+			duration_us = int64(rules.Max_duration_us)
+		}
+	}
+
+	// Compute the number of priority levels needed
+	max_prio, min_prio := s.Priorities[0], s.Priorities[0]
+	for i := 1; i < len(s.Priorities); i++ {
+		if s.Priorities[i] > max_prio {
+			max_prio = s.Priorities[i]
+		}
+		if s.Priorities[i] < min_prio {
+			min_prio = s.Priorities[i]
+		}
+	}
+
+	// One level is reserved for the executor scheduler
+	ppe_levels := (max_prio - min_prio + 1) + 1
+
+	// Prepare meta-data for the RCLCPP representation
+	meta_data := gen.Metadata{
+		Packages:          pkgs,
+		Includes:          incl,
+		MsgType:           "std_msgs::msg::Int64",
+		PPE:               ros_app.PPE,
+		PPE_levels:        ppe_levels,
+		FilterPolicy:      "message_filters::sync_policies::ApproximateTime",
+		Libraries:         libs,
+		Headers:           headers,
+		Sources:           srcs,
+		Duration_us:       duration_us,
+		Logging_mode:      rules.Logging_mode,
+	}
+
+	// Prepare graph data for informing application generation
 	graph_data := gen.Graphdata {
-		Chains:        chains,
-		Node_wcet_map: node_wcet_map,
-		Node_prio_map: node_prio_map,
-		Graph:         g,
+		Chains:        s.Chains,
+		Node_wcet_map: s.Node_wcet_map,
+		Node_prio_map: s.Node_prio_map,
+		Graph:         s.Graph,
 	}
 
 	// Generate the application
-	err = gen.GenerateApplication(app, path, meta, graph_data)
+	err := gen.GenerateApplication(ros_app, s.Directory, meta_data, graph_data)
 	check(err, "Unable to generate application")()
-	info("Nominal")
+
+	info("... OK\n")
+}
+
+func generate_chain_file (rules types.Rules, s *System) {
+	info("Generating a chain file for analysis ...\n")
+
+	// Convert chain periods from float to int
+	chain_periods_integer := []int{}
+	for _, p := range s.Periods {
+		chain_periods_integer = append(chain_periods_integer, int(p))
+	}
+
+	// Debug
+	debug("len(s.Chains) = %d\n", len(s.Chains))
+	debug("len(chain_periods_integer) = %d\n", len(chain_periods_integer))
+	debug("len(s.Priorities) = %d\n", len(s.Priorities))
+	debug("len(s.Paths) = %d\n", len(s.Paths))
+	debug("len(s.Utilisations) = %d\n", len(s.Utilisations))
+
+	// Generate the file
+	err := analysis.WriteChains(s.Directory + "/chains.json", 
+		rules.Random_seed, 
+		rules.PPE, 
+		rules.Chain_avg_len,
+		rules.Executor_count,
+		rules.Chain_merge_p, 
+		rules.Chain_sync_p, 
+		rules.Chain_variance,
+		s.Chains, 
+		chain_periods_integer, 
+		s.Priorities,
+		s.Paths, 
+		s.Utilisations)
+	check(err, "Unable to generate chains analysis file")()
+
+	info("... OK\n")
+}
+
+/*
+ *******************************************************************************
+ *                                    Main                                     *
+ *******************************************************************************
+*/
+
+// Returns an Argument structure with default arguments pre-filled
+func bind(k string, f func(string) error) Argument {
+	return Argument{Keyword: k, Value: nil, Action: f}
+}
+
+// Returns nil if given string could be matched to arg (and configures arg)
+func match_argument (s string, args *[]Argument) error {
+	for i, arg := range (*args) {
+		prefix := fmt.Sprintf("--%s=", arg.Keyword)
+		if strings.HasPrefix(s, prefix) {
+			value := s[len(prefix):]
+			(*args)[i].Value = &value
+			return nil
+		}
+	}
+	return errors.New(fmt.Sprintf("Unknown argument: \"%s\"", s))
+}
+
+func main () {
+	var err error
+	var system System
+	var rules types.Rules
+	var custom_timing CustomTiming
+	var is_custom_timing bool = false
+	var is_custom_rules  bool = false
+	var is_custom_config bool = false
+	var options []Argument = []Argument{
+		bind("rules-file", func (s string) error {
+			d, e := ioutil.ReadFile(s)
+			if nil != e {
+				return e
+			} else {
+				is_custom_rules = true
+			}
+			return json.Unmarshal(d, &rules)
+		}),
+		bind("rules-data", func (s string) error {
+			d := []byte(s)
+			is_custom_rules = true
+			return json.Unmarshal(d, &rules)
+		}),
+		bind("timing-data", func (s string) error {
+			d := []byte(s)
+			is_custom_timing = true
+			return json.Unmarshal(d, &custom_timing)
+		}),
+		bind("config-file", func (s string) error {
+			is_custom_config = true
+			return errors.New("Not supported at this time")
+		}),
+		bind("verbose", func (s string) error {
+			if s == "true" {
+				g_verbose = true
+				return nil
+			}
+			if s != "false" {
+				return errors.New("Expected \"true\" or \"false\"")
+			}
+			return nil
+		}),
+		bind("debug", func (s string) error {
+			if s == "true" {
+				g_debug = true
+				return nil
+			}
+			if s != "false" {
+				return errors.New("Expected \"true\" or \"false\"")
+			}
+			return nil
+		}),
+	}
+
+	// Check arguments
+	for i := 1; i < len(os.Args); i++ {
+		err = match_argument(os.Args[i], &options)
+		check(err, "Argument %d", i-1)()
+	}
+	for i, arg := range options {
+		if nil != arg.Value {
+			check(arg.Action(*(arg.Value)), fmt.Sprintf("Option %d: %s", i,
+				arg.Keyword))()
+		}
+	}
+
+	// Check for contradictory rules
+	if is_custom_rules == is_custom_config {
+		fmt.Printf("%s (--rules-file=<filename> [--timing-data=<json>] | --config-file=<filename>)\n", 
+			os.Args[0])
+		fmt.Println(g_usage)
+		return
+	}
+
+	// Attempt to open timing data, if set
+	if is_custom_timing {
+		info("Custom timing information is in use!")
+	}
+
+	// 1. Seed and directory setup
+	set_seed_and_directory(rules, &system)
+
+	// 2. Set benchmarks
+	set_benchmarks(&system)
+
+	// 3. Generate random graph
+	set_random_graph(rules, &system)
+
+
+	// Try this a few times
+	attempts, max_attempts := 0, 3
+	for attempts < max_attempts {
+
+		// 4. Assign utilisation and timing
+		set_utilisation_and_timing(custom_timing, is_custom_timing,
+			rules, &system)
+
+		// 5. Map benchmarks to nodes
+		if set_node_benchmarks(&system) {
+			break
+		} else {
+			warn("Failed to generate suitable timing ... trying again\n")
+			attempts++
+		}
+	}
+	if attempts == max_attempts {
+		reason := fmt.Sprintf("Exhausted %d/%d attempts to match benchmarks to timing data",
+			max_attempts, max_attempts)
+		check(errors.New(reason), "Benchmark assignment")()
+	}
+
+	// 6. Perform synchronisations (if configured)
+	set_graph_synchronisations(rules, &system)
+
+	// 7. Assign priorities to nodes
+	set_node_priorities(rules, &system)
+
+	// 8. Generate the ROS application
+	generate_ros_application(rules.Name, rules, &system)
+
+	// 9. Generate the chains file
+	generate_chain_file(rules, &system)
 
 	// Warn that utilisation does not apply if synchronization enabled
-	if input.Chain_sync_p > 0.0 {
+	if rules.Chain_sync_p > 0.0 {
 		warn("Nonzero chance of sync nodes, means that utilisation does not apply as expected!")
 	}
 
-	// Write the chains file, which is used for analysis
-	periods_int := []int{}
-	for _, p := range periods {
-		periods_int = append(periods_int, int(p))
-	}
-	err = analysis.WriteChains(path + "/chains.json", input.Random_seed, input.PPE, chains, 
-		periods_int, priorities, paths, us)
-	check(err, "Unable to generate chains analysis file")()
+	info("Done")
 
 	// Todo:
 	// 1. Make sure two versions of each application are generated (vanilla, ppe)
@@ -1021,5 +1388,14 @@ func main () {
 
 	// TODO: 
 	// Ensure the priority range given to the PPE is determined by the number of 
-	// differing priorities desired 
+	// differing priorities desired
+
+	// TODO:
+	// Ensure you can somehow lengthen each path WCET by a certain amount without touching
+	// the existing amount of work
+
+	// TODO:
+	// Okay, so we know that we're not using the original TACLe benchmarks. So why not just 
+	// make our own evaluation program for the timing instead of the convoluted shit with 
+	// perf. That makes it portable to macOS again and is so much simpler
 }

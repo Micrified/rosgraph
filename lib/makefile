@@ -1,5 +1,8 @@
 all: libtacle.a
 
+benchmark: benchmark.cpp
+	g++ -o $@ $^ -L./ -ltacle
+
 libtacle.a: statemate.o petrinet.o ndes.o mpeg2.o huff_enc.o g723_enc.o epic.o dijkstra.o adpcm_dec.o adpcm_enc.o
 	ar -cvq $@ $^
 
