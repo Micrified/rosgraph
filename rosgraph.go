@@ -1014,8 +1014,6 @@ func set_graph_synchronisations (rules types.Rules, s *System) {
 		}
 	}
 
-	fmt.Println(s.Graph.String(ops.Show))
-
 	// Repair all paths
 	debug("Repairing paths ...\n")
 	err, paths := ops.RepairPathTags(s.Chains, s.Graph)
