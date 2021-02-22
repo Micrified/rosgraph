@@ -299,9 +299,6 @@ func get_valid_syncs (g *graph.Graph) ([]ops.Edge, []ops.Edge) {
 		for i := 0; i < len(edges) - 1; i++ {
 			for j := i+1; j < len(edges); j++ {
 				if can_sync(edges[i], edges[j]) {
-					fmt.Printf("It is okay to sync: %d --[%d]--> %d, and %d --[%d]--> %d\n",
-						edges[i].Base, edges[i].Token.Tag, edges[i].Dest,
-					    edges[j].Base, edges[j].Token.Tag, edges[j].Dest)
 					return i, j
 				}
 			}
@@ -341,6 +338,68 @@ func get_valid_syncs (g *graph.Graph) ([]ops.Edge, []ops.Edge) {
 	}
 
 	return xs, ys
+}
+
+// Returns true if there exists a deadlock in the graph
+func deadlock_detect (chains []int, g *graph.Graph) (bool, error) {
+
+	// Compute max node ID
+	node_count := 0
+	for i := 0; i < len(chains); i++ {
+		node_count += chains[i]
+	}
+
+	// Closure: Returns true if node is a sync node
+	is_sync := func (id int) bool {
+		return id >= node_count
+	}
+
+	// Create dependency buckets for each sync node
+	sync_dependencies := make([][]int, g.Len() - node_count)
+
+	// Locate dependencies for each sync node
+	for sync_node_id := node_count; sync_node_id < g.Len(); sync_node_id++ {
+
+		// Locate both dependencies
+		branches := ops.TokensForColumn(sync_node_id, g)
+
+		// Verify exactly two branches
+		if len(branches) != 2 {
+			reason := "Sync node does not have exactly two incoming edges"
+			return false, errors.New(reason)
+		}
+
+		// Add branch dependencies
+		for _, t := range branches {
+
+			backtrace := ops.Backtrace(t.Tag, sync_node_id, is_sync, g)
+
+			// Add to dependencies
+			sync_dependencies[sync_node_id - node_count] = 
+				append(sync_dependencies[sync_node_id - node_count], backtrace...)
+		}
+
+	}
+
+	// Detect cycles in dependencies
+	for i := 0; i < len(sync_dependencies); i++ {
+		fmt.Printf("Sync node %d depends on: ", node_count + i)
+		for j := 0; j < len(sync_dependencies[i]); j++ {
+			fmt.Printf("%d ", sync_dependencies[i][j])
+		}
+		fmt.Printf("\n")
+	}
+
+	// Detect cycles in dependencies
+	for i := 0; i < len(sync_dependencies); i++ {
+		start := node_count + i
+		if ops.IsCycle(node_count, start, start, []int{}, sync_dependencies) {
+			fmt.Printf("There is a deadlock in sync node %d dependencies!\n", start)
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 /*
@@ -634,6 +693,7 @@ func synthesize_node_priorities (chains, priorities []int, g *graph.Graph) map[i
 
 	return node_prio_map
 }
+
 
 /*
  *******************************************************************************
@@ -930,13 +990,26 @@ func set_graph_synchronisations (rules types.Rules, s *System) {
 			// Extract the edges to sync
 			x, y := xs[i], ys[i]
 
+			// Copy the graph
+			g_copy := s.Graph.Clone()
+
 			// Place a sync node between the edges
 			debug("Syncing (%d --[%d]--> %d) and (%d --[%d]--> %d)\n", 
 				xs[i].Base, xs[i].Token.Tag, xs[i].Dest,
 		    	ys[i].Base, ys[i].Token.Tag, ys[i].Dest)
-			err = ops.Sync(x, y, s.Graph);
-			debug("- Sync complete\n")
+			err = ops.Sync(x, y, g_copy);
 			check(err, "Fault when synchronising edges")()
+
+			// Check for deadlocks
+			fault, err := deadlock_detect(s.Chains, g_copy)
+			check(err, "Fault in deadlock detection")()
+			if fault {
+				debug("- Sync would cause deadlock -> aborted\n")
+			} else {
+				ops.Sync(x, y, s.Graph)
+				debug("- Sync complete\n")
+			}
+
 		}
 	}
 
