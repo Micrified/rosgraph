@@ -9,6 +9,7 @@
 {{- $meta := .}}
 using std::placeholders::_1;
 using FilterPolicy = {{$meta.FilterPolicy}}<{{$meta.MsgType}}, {{$meta.MsgType}}>;
+using MsgMemStrat  = rclcpp::message_memory_strategy::MessageMemoryStrategy<{{$meta.MsgType}}>;
 {{- $executor := .Executor}}
 {{- $executor_id := $executor.ID}}
 {{range $executor.Nodes}}
@@ -146,11 +147,11 @@ public:
 		{{- else}}
 		std::function<void(const {{$meta.MsgType}}::SharedPtr msg_p)> f{{$callback.ID}}_{{$i}} = std::bind(&N{{$node_id}}::C{{$callback.ID}}, this, std::placeholders::_1, "T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}");
 		{{- if $meta.PPE}}
-		sub_{{$from}}_{{$callback.ID}}_{{$ch}} = this->create_priority_subscription<{{$meta.MsgType}}>("T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}", 10,
-			f{{$callback.ID}}_{{$i}}, {{$callback.Priority}});
+		sub_{{$from}}_{{$callback.ID}}_{{$ch}} = this->create_subscription<{{$meta.MsgType}}>("T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}", 10,
+			f{{$callback.ID}}_{{$i}}, rclcpp::SubscriptionOptions(), MsgMemStrat::create_default(), {{$callback.Priority}});
 		{{- else}}
 		sub_{{$from}}_{{$callback.ID}}_{{$ch}} = this->create_subscription<{{$meta.MsgType}}>("T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}", 10,
-			f{{$callback.ID}}_{{$i}});
+			f{{$callback.ID}}_{{$i}}, rclcpp::SubscriptionOptions(), MsgMemStrat::create_default());
 		{{- end}}
 		{{- end}}
 		{{- end}}
@@ -161,7 +162,7 @@ public:
 			{{- range $i, $from := .Topics_rx}}
 			{{- $to := index $filter.Topics_tx $i}}
 			{{- $ch := index $filter.Topics_cx $i}}
-		sub_{{$from}}_{{$filter.ID}}_{{$ch}}.subscribe(this, "T_N{{$from}}_N{{$filter.ID}}_C{{$ch}}");
+		sub_{{$from}}_{{$filter.ID}}_{{$ch}}.subscribe(this, "T_N{{$from}}_N{{$filter.ID}}_C{{$ch}}", rmw_qos_profile_default, {{$filter.Priority}});
 		pub_{{$filter.ID}}_{{$to}}_{{$ch}} = this->create_publisher<{{$meta.MsgType}}>("T_N{{$filter.ID}}_N{{$to}}_C{{$ch}}", 10);
 			{{- end}}
 		filter_{{$filter.ID}} = std::make_shared<message_filters::Synchronizer<FilterPolicy>>(
