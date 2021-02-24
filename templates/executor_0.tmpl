@@ -35,7 +35,7 @@ private:
     {{- end}}
     {{- end}}
 {{- end}}
-
+    // Subscribers and publishers for message-filters (below)
 {{- range .Filters}}
 	{{- $filter := .}}
 	{{- range $i, $from := .Topics_rx}}
@@ -44,6 +44,7 @@ private:
 	message_filters::Subscriber<{{$meta.MsgType}}> sub_{{$from}}_{{$filter.ID}}_{{$ch}};
 	rclcpp::Publisher<{{$meta.MsgType}}>::SharedPtr pub_{{$filter.ID}}_{{$to}}_{{$ch}};
 	{{- end}}
+	std::shared_ptr<message_filters::Synchronizer<FilterPolicy>> filter_{{$filter.ID}};
 {{- end}}
 
 	// Standard callbacks
@@ -96,11 +97,11 @@ private:
 	// Message filter callbacks
 {{- range .Filters}}
 	{{- $filter := .}}
-	void C{{.ID}} ({{$meta.MsgType}}::SharedPtr msg_0, {{$meta.MsgType}}::SharedPtr msg_1)
+	void C{{.ID}} (const {{$meta.MsgType}} &msg_0, const {{$meta.MsgType}} &msg_1)
 	{
 		{{- range $i, $to := .Topics_tx}}
 		{{- $ch := index $filter.Topics_cx $i}}
-		pub_{{$filter.ID}}_{{$to}}_{{$ch}}->publish(*msg_{{$i}});
+		pub_{{$filter.ID}}_{{$to}}_{{$ch}}->publish(msg_{{$i}});
 		{{- end}}
 	}
 {{- end}}
@@ -155,11 +156,18 @@ public:
 		{{- end}}
 		{{- end}}
 
-		// Init message filter publishers and subscriptions
+		// Init message filter (along with their publishers and subscribers)
 		{{- range $i, $filter := .Filters}}
-		message_filters::Synchronizer<FilterPolicy> filter_{{$filter.ID}}(
+			{{- range $i, $from := .Topics_rx}}
+			{{- $to := index $filter.Topics_tx $i}}
+			{{- $ch := index $filter.Topics_cx $i}}
+		sub_{{$from}}_{{$filter.ID}}_{{$ch}}.subscribe(this, "T_N{{$from}}_N{{$filter.ID}}_C{{$ch}}");
+		pub_{{$filter.ID}}_{{$to}}_{{$ch}} = this->create_publisher<{{$meta.MsgType}}>("T_N{{$filter.ID}}_N{{$to}}_C{{$ch}}", 10);
+			{{- end}}
+		filter_{{$filter.ID}} = std::make_shared<message_filters::Synchronizer<FilterPolicy>>(
 			FilterPolicy(10){{range $j, $from := $filter.Topics_rx}}{{- $ch := index $filter.Topics_cx $j}},  sub_{{.}}_{{$filter.ID}}_{{$ch}}{{end}});
-		filter_{{$filter.ID}}.registerCallback(&N{{$node_id}}::C{{$filter.ID}}, this);
+		filter_{{$filter.ID}}->setMaxIntervalDuration(rclcpp::Duration(300,0)); // 300 seconds interval duration (~ maximum tolerance)
+		filter_{{$filter.ID}}->registerCallback(&N{{$node_id}}::C{{$filter.ID}}, this);			
 		{{- end}}
 	}
 };

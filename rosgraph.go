@@ -1092,6 +1092,7 @@ func generate_ros_application (name string, rules types.Rules, s *System) {
 	incl := []string{"std_msgs/msg/int64.hpp",
 		"message_filters/subscriber.h",
 		"message_filters/sync_policies/approximate_time.h",
+		"message_filters/time_synchronizer.h",
 		name + "/" + "tacle_benchmarks.h",
 	    name + "/" + "roslog.h",
 	}
