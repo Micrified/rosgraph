@@ -191,8 +191,8 @@ public:
 		pub_{{$filter.ID}}_{{$to}}_{{$ch}} = this->create_publisher<{{$meta.MsgType}}>("T_N{{$filter.ID}}_N{{$to}}_C{{$ch}}", 10);
 			{{- end}}
 		filter_{{$filter.ID}} = std::make_shared<message_filters::Synchronizer<FilterPolicy>>(
-			FilterPolicy(10){{range $j, $from := $filter.Topics_rx}}{{- $ch := index $filter.Topics_cx $j}},  sub_{{.}}_{{$filter.ID}}_{{$ch}}{{end}});
-		filter_{{$filter.ID}}->setMaxIntervalDuration(rclcpp::Duration(300,0)); // 300 seconds interval duration (~ maximum tolerance)
+			FilterPolicy({{$filter.Capacity}}){{range $j, $from := $filter.Topics_rx}}{{- $ch := index $filter.Topics_cx $j}},  sub_{{.}}_{{$filter.ID}}_{{$ch}}{{end}});
+		filter_{{$filter.ID}}->setMaxIntervalDuration(rclcpp::Duration({{$filter.Duration}},0)); // {{$filter.Duration}} seconds interval duration (~ maximum tolerance)
 		filter_{{$filter.ID}}->registerCallback(&N{{$node_id}}::C{{$filter.ID}}, this);			
 		{{- end}}
 	}
