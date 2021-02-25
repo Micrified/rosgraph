@@ -139,12 +139,12 @@ public:
 		// Init timers
 		{{- range .Callbacks}}
 		{{- if .Timer}}
-		{{- if $meta.PPE}}
-		timer_{{.ID}} = this->create_wall_timer(std::chrono::microseconds({{.Period}}),
-			std::bind(&N{{$node_id}}::C{{.ID}}, this), nullptr, {{.Priority}});
-		{{- else}}
+		{{- if eq $meta.PPE 0}}
 		timer_{{.ID}} = this->create_wall_timer(std::chrono::microseconds({{.Period}}),
 			std::bind(&N{{$node_id}}::C{{.ID}}, this), nullptr);
+		{{- else}}
+		timer_{{.ID}} = this->create_wall_timer(std::chrono::microseconds({{.Period}}),
+			std::bind(&N{{$node_id}}::C{{.ID}}, this), nullptr, {{.Priority}});
 		{{- end}}
 		{{- end}}
 		{{- end}}
@@ -171,12 +171,12 @@ public:
 		{{- if eq $from -1}}
 		{{- else}}
 		std::function<void(const {{$meta.MsgType}}::SharedPtr msg_p)> f{{$callback.ID}}_{{$i}} = std::bind(&N{{$node_id}}::C{{$callback.ID}}, this, std::placeholders::_1, "T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}");
-		{{- if $meta.PPE}}
-		sub_{{$from}}_{{$callback.ID}}_{{$ch}} = this->create_subscription<{{$meta.MsgType}}>("T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}", 10,
-			f{{$callback.ID}}_{{$i}}, rclcpp::SubscriptionOptions(), MsgMemStrat::create_default(), {{$callback.Priority}});
-		{{- else}}
+		{{- if eq $meta.PPE 0}}
 		sub_{{$from}}_{{$callback.ID}}_{{$ch}} = this->create_subscription<{{$meta.MsgType}}>("T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}", 10,
 			f{{$callback.ID}}_{{$i}}, rclcpp::SubscriptionOptions(), MsgMemStrat::create_default());
+		{{- else}}
+		sub_{{$from}}_{{$callback.ID}}_{{$ch}} = this->create_subscription<{{$meta.MsgType}}>("T_N{{$from}}_N{{$callback.ID}}_C{{$ch}}", 10,
+			f{{$callback.ID}}_{{$i}}, rclcpp::SubscriptionOptions(), MsgMemStrat::create_default(), {{$callback.Priority}});
 		{{- end}}
 		{{- end}}
 		{{- end}}
@@ -208,18 +208,22 @@ int main (int argc, char *argv[])
 	auto node_N{{.ID}} = std::make_shared<N{{.ID}}>();
 	{{- end}}
 
-	{{- if $meta.PPE}}
+	{{- if eq $meta.PPE 0}}
+	{{- else}}
 	// Init executor priority range
 	int max_prio = 99;
 	int min_prio = max_prio - {{$meta.PPE_levels}} + 1;
 	{{- end}}
 
 	// Init executor
-	{{- if $meta.PPE}}
-	rclcpp::executors::PreemptivePriorityExecutor exec(rclcpp::ExecutorOptions(), {min_prio, max_prio});
-	{{- else}}
-	// rclcpp::executors::MultiThreadedExecutor exec(rclcpp::ExecutorOptions(), 2);
+	{{- if eq $meta.PPE 0}}
 	rclcpp::executors::SingleThreadedExecutor exec;
+	{{- end}}
+	{{- if eq $meta.PPE 1}}
+	rclcpp::executors::PPE::ProducerConsumerExecutor exec(rclcpp::ExecutorOptions(), {min_prio, max_prio});
+	{{- end}}
+	{{- if eq $meta.PPE 2}}
+	rclcpp::executors::PPE::ThreadDispatchExecutor exec(rclcpp::ExecutorOptions(), {min_prio, max_prio});
 	{{- end}}
 
 
