@@ -862,7 +862,7 @@ func set_utilisation_and_timing (custom_timing CustomTiming,
 		}
 
 		// Check that the given utilisation is under the rules threshold (with tolerance)
-		if math.Abs(u_sum - rules.Util_total) > 0.001 {
+		if (rules.Util_total - u_sum) < 0 {
 			reason := fmt.Sprintf("Utilisation under custom timing exceeds threshold (%f > %f)",
 				u_sum, rules.Util_total)
 			check(errors.New(reason), "Utilisation check")()
@@ -1348,31 +1348,6 @@ func main () {
 
 	info("Done")
 
-	// Todo:
-	// 1. Make sure two versions of each application are generated (vanilla, ppe)
-	// 2. Make sure this is working for sync
-	// 3. Generate a launch file too
-	// 4. Finalize some kind of logging
-
-	// Todo: 
-	// Convert timing to microseconds due to overflows
-	// when computing hyperperiod for large values
-
-	// Assign priorities using rate-monotonic
-	// (this means your sufficient test is via the hyperbolic bound, which says)
-	// The sum of all utilizations, each with 1 added, is less than or equal to 2 (see internet)
-	// The rate-monotonnic priority assignment is optimal, meaning that if any static priority
-	// scheduling algorithm can meet all deadlines, then rate monotonic can too. 
-	// Simple rate-monotonic analysis assumes
-	// 1. No resource sharing
-	// 2. deadlines = periods
-	// 3. static priorities (preemption)
-	// 4. static priorities are assigned according to rate monotonic convetntions
-	// 5. no impact of context switch times
-	//
-	// Right now, all I do is make sure system passes necessary condition. But it still
-	// might not be schedulable. 
-
 	// TODO: Place the generates image files WITH the code in a separate folder
 	// Also include the chains file
 
@@ -1385,19 +1360,4 @@ func main () {
 	// of shared callbacks or sync nodes first. Those will be testing your synthesis 
 	// policy
 
-	// TODO:
-	// Sort logs in chronological order, so that you don't screw up the log interpreter
-
-	// TODO: 
-	// Ensure the priority range given to the PPE is determined by the number of 
-	// differing priorities desired
-
-	// TODO:
-	// Ensure you can somehow lengthen each path WCET by a certain amount without touching
-	// the existing amount of work
-
-	// TODO:
-	// Okay, so we know that we're not using the original TACLe benchmarks. So why not just 
-	// make our own evaluation program for the timing instead of the convoluted shit with 
-	// perf. That makes it portable to macOS again and is so much simpler
 }
