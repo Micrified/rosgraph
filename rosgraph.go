@@ -5,7 +5,7 @@ import (
 	// Standard packages
 	"os"
 	"fmt"
-	"sort"
+	//"sort"
 	"strings"
 	"errors"
 	"math"
@@ -667,28 +667,42 @@ func synthesize_node_priorities (chains, priorities []int, g *graph.Graph) map[i
 				node_prio_map[node] = priority
 				continue
 			}
-			if priority > existing_priority {
-				node_prio_map[node] = priority
-			}
+			node_prio_map[node] = ops.Max(priority, existing_priority)
 		}
 	}
 
-	// Go down the paths of all chains. If you hit a sync, then adopt the sync value
-	// and propagate all the way back down
-	for i := 0; i < len(chains); i++ {
-		path, min_priority := paths[i], priorities[i]
 
-		for j := (len(path) - 1); j >= 0; j-- {
-			node := path[j]
+	// Until no more changes are made
+	for {
 
-			// Update minimum priority if a sync node
-			if node >= n_chain_nodes {
-				min_priority = ops.Max(min_priority, node_prio_map[node])
+		// Assume no changes
+		changes := false
+
+		// Go down the paths of all chains. If you hit a sync, then adopt the sync value
+		// and propagate all the way back down
+		for i := 0; i < len(chains); i++ {
+			path, min_priority := paths[i], priorities[i]
+
+			for j := (len(path) - 1); j >= 0; j-- {
+				node := path[j]
+
+				// If it's a sync node: update minimum priority
+				if node >= n_chain_nodes {
+					if min_priority > node_prio_map[node] {
+						changes = true
+					}
+					min_priority = ops.Max(min_priority, node_prio_map[node])
+				}
+
+				// Apply minimum priority
+				node_prio_map[node] = ops.Max(min_priority, node_prio_map[node])
 			}
-
-			// Apply minimum priority
-			node_prio_map[node] = ops.Max(min_priority, node_prio_map[node])
 		}
+
+		// Break if no changes
+		if !changes {
+			break
+		}	
 	}
 
 	return node_prio_map
@@ -1041,15 +1055,15 @@ func set_node_priorities (rules types.Rules, s *System) {
 	//##################### Rate Monotonic #######################
 
 	// Sort the indices by order of increasing period
-	sort.Slice(chains, func(i, j int) bool {
-		return s.Timing[chains[i]].T > s.Timing[chains[j]].T
-	})
+	// sort.Slice(chains, func(i, j int) bool {
+	// 	return s.Timing[chains[i]].T > s.Timing[chains[j]].T
+	// })
 
-	// Build the priority slice
-	priorities := make([]int, rules.Chain_count)
-	for i := 0; i < rules.Chain_count; i++ {
-		priorities[chains[i]] = i
-	}
+	// // Build the priority slice
+	// priorities := make([]int, rules.Chain_count)
+	// for i := 0; i < rules.Chain_count; i++ {
+	// 	priorities[chains[i]] = i
+	// }
 
 	// ################### Always chain 0 ############################
 	// priorities := make([]int, rules.Chain_count)
@@ -1057,6 +1071,12 @@ func set_node_priorities (rules types.Rules, s *System) {
 	// for i := 1; i < rules.Chain_count; i++ {
 	// 	priorities[i] = 0
 	// }
+	// ################### Always last chain #########################
+	priorities := make([]int, rules.Chain_count)
+	priorities[rules.Chain_count - 1] = 1
+	for i := 0; i < (rules.Chain_count - 1); i++ {
+		priorities[i] = 0
+	}
 
 	// Debug
 	for i, p := range priorities {
